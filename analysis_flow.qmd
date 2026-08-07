@@ -1,0 +1,5242 @@
+---
+title: "analysis new variables and flows"
+format: 
+  pdf:
+    fig_height: 16
+    fig_width: 50
+    toc: true
+    number-sections: true
+    colorlinks: true
+    toc-depth: 5
+    toc-title: Table of Contents
+editor_options: 
+  chunk_output_type: console
+---
+# Analysis of data from february qith additional variables and flows
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE, message = FALSE)
+options(knitr.duplicate.label = "allow")
+```
+##  Library Charging
+```{r}
+#| label: library 
+#| include: false
+
+setwd("~/Documents/ns-3.45")
+gc()
+#source(file = "./delay_function.R")
+source(file = "./scratch/ninth/real_data.R")
+source(file = "./scratch/ninth/variation_generator_function.R")
+source(file = "./scratch/ninth/model_function.R")
+source(file = "./scratch/ninth/setup_param.R")
+source(file = "./scratch/ninth/setup_function.R")
+
+library(akima)  # Pour l'interpolation 2D
+library(caret)
+library(cluster)
+library(cowplot) # Pour combiner les graphiques
+library(data.table)
+library(dbscan)
+library(dplyr) # function distinct
+library(e1071)
+library(factoextra)
+library(FactoMineR) # PCA
+library(gganimate) # animated heatmap
+library(ggcorrplot) # ggcorrplot
+library(ggplot2)
+library(ggplot2movies)
+library(grid)
+library(gridExtra) # grid.arrange 
+library(isotree)
+#library(magick)
+library(mixtools)
+library(proxy)
+library(plyr)
+library("plot3D")# Pour les graphiques 3D
+library(plot3Drgl)
+library(randomForest)
+library(rgl)
+library(readr)
+library(rpart) 
+library(rpart.plot)
+library(xgboost) #for fitting the xgboost model
+library(zeallot) # %<-% operator
+
+library(latex2exp)
+
+```
+
+## Data charging
+
+```{r}
+
+
+# evolution of modele
+dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-22 10:12:11.293604.csv")
+dtf_NYevolutionComplete <- dtf_16[V31 == TRUE,]
+dtf_Yevolution <- dtf_16[V22 == TRUE & grepl('Mbps', dtf_16$V23, fixed=TRUE)]
+dtf_NevolutionComplete <- dtf_16[V22 == FALSE & grepl('Mbps', dtf_16$V23, fixed=TRUE)]
+dtf_NevolutionIncomplete <- dtf_16[V22 == FALSE & V28 == TRUE]
+colnames(dtf_Yevolution) <- c("nb_packets", "path_length", "nb_detour", "prop_att", 
+                      "size_group",  "model", "approach",  "error", "all_err",
+                      "no_err", "Recall", "Precision", "F1_score", "simulation_time",
+                      "latency", "bandwidth", "data_rate", "parasite_rate", 
+                      "meanexp", "parasite_meanexp", "protocol", "do_evolution",
+                      "trainonparasite", "trainondetour","trainonpath",
+                      "TP", "FN", "FP", "TN", "packet_length", "testattheend", "seed")
+colnames(dtf_NevolutionComplete) <- c("nb_packets", "path_length", "nb_detour", "prop_att", 
+                      "size_group",  "model", "approach",  "error", "all_err",
+                      "no_err", "Recall", "Precision", "F1_score", "simulation_time",
+                      "latency", "bandwidth", "data_rate", "parasite_rate", 
+                      "meanexp", "parasite_meanexp", "protocol", "do_evolution",
+                      "trainonparasite", "trainondetour","trainonpath",
+                      "TP", "FN", "FP", "TN", "packet_length", "testattheend", "seed")
+colnames(dtf_NevolutionIncomplete) <- c("nb_packets", "path_length", "nb_detour", "prop_att", 
+                      "size_group",  "model", "approach",  "error", "all_err",
+                      "no_err", "Recall", "Precision", "F1_score", "simulation_time",
+                      "latency", "bandwidth", "data_rate", "parasite_rate", 
+                      "meanexp", "parasite_meanexp", "protocol", "do_evolution",
+                      "TP", "FN", "FP", "TN", "packet_length", "testattheend", "seed",
+                      "trainonparasite", "trainondetour","trainonpath")
+
+dtf_Nevolution = rbind(dtf_NevolutionComplete, dtf_NevolutionIncomplete)
+dtf_Nevolution <- dtf_Nevolution[seed != "scratch/ninth/2025-10-16_01-53-23"| is.na(seed),]
+dtf_Yevolution <- dtf_Yevolution[seed != "scratch/ninth/2025-10-16_01-53-23" | is.na(seed),]
+
+dtf_Yevolution[, nb_packets := as.integer(nb_packets)]
+dtf_Yevolution[, path_length := as.integer(path_length)]
+dtf_Yevolution[, nb_detour := as.integer(nb_detour)]
+dtf_Yevolution[, prop_att := as.numeric(prop_att)]
+dtf_Yevolution[, size_group := as.integer(size_group)]
+dtf_Yevolution[, F1_score := as.numeric(F1_score)]
+dtf_Yevolution[, Precision := as.numeric(Precision)]
+dtf_Yevolution[, Recall := as.numeric(Recall)]
+dtf_Yevolution[, simulation_time := as.integer(simulation_time)]
+dtf_Yevolution[, meanexp := as.numeric(meanexp)]
+dtf_Yevolution[, parasite_meanexp := as.numeric(parasite_meanexp)]
+dtf_Yevolution[, TP := as.integer(TP)]
+dtf_Yevolution[, FN := as.integer(FN)]
+dtf_Yevolution[, FP := as.integer(FP)]
+dtf_Yevolution[, TN := as.integer(TN)]
+dtf_Yevolution[, packet_length := as.integer(packet_length)]
+dtf_Yevolution[, testattheend := as.logical(testattheend)]
+dtf_Yevolution[, do_evolution := as.logical(do_evolution)]
+dtf_Yevolution[, trainondetour := as.integer(trainondetour)]
+dtf_Yevolution[, trainonpath := as.integer(trainonpath)]
+
+dtf_Nevolution[, nb_packets := as.integer(nb_packets)]
+dtf_Nevolution[, path_length := as.integer(path_length)]
+dtf_Nevolution[, nb_detour := as.integer(nb_detour)]
+dtf_Nevolution[, prop_att := as.numeric(prop_att)]
+dtf_Nevolution[, size_group := as.integer(size_group)]
+dtf_Nevolution[, F1_score := as.numeric(F1_score)]
+dtf_Nevolution[, Precision := as.numeric(Precision)]
+dtf_Nevolution[, Recall := as.numeric(Recall)]
+dtf_Nevolution[, simulation_time := as.integer(simulation_time)]
+dtf_Nevolution[, meanexp := as.numeric(meanexp)]
+dtf_Nevolution[, parasite_meanexp := as.numeric(parasite_meanexp)]
+dtf_Nevolution[, TP := as.integer(TP)]
+dtf_Nevolution[, FN := as.integer(FN)]
+dtf_Nevolution[, FP := as.integer(FP)]
+dtf_Nevolution[, TN := as.integer(TN)]
+dtf_Nevolution[, packet_length := as.integer(packet_length)]
+dtf_Nevolution[, testattheend := as.logical(testattheend)]
+dtf_Nevolution[, do_evolution := as.logical(do_evolution)]
+dtf_Nevolution[, trainondetour := as.integer(trainondetour)]
+dtf_Nevolution[, trainonpath := as.integer(trainonpath)]
+
+to_distinct = c("nb_packets", "prop_att", "size_group", "path_length", 
+                "nb_detour", "model", "approach", "simulation_time", 
+                "latency", "bandwidth", "data_rate", "parasite_rate", 
+                "F1_score", "Recall", "Precision", "TP", "TN", "FP", "FN", 
+                "error","all_err","no_err", "meanexp","parasite_meanexp",
+                "protocol",  "do_evolution", #"packet_length","testattheend"
+                "trainonparasite", "trainondetour", "trainonpath", "seed")
+dtf_Yevolution <- dtf_Yevolution[!duplicated(dtf_Yevolution[, ..to_distinct], fromLast = TRUE)]
+dtf_Nevolution <- dtf_Nevolution[!duplicated(dtf_Nevolution[, ..to_distinct], fromLast = TRUE)]
+
+# choose here between dtf_Nevolution and dtf_Yevolution
+dtf <- dtf_Yevolution[, .(
+  F1_score = mean(F1_score, na.rm = TRUE),
+  F1_sd = sd(F1_score, na.rm = TRUE),
+  F1_ci_lower = mean(F1_score, na.rm = TRUE) - qt(0.975, .N - 1) * sd(F1_score, na.rm = TRUE) / sqrt(.N),
+  F1_ci_upper = mean(F1_score, na.rm = TRUE) + qt(0.975, .N - 1) * sd(F1_score, na.rm = TRUE) / sqrt(.N),
+  Precision_mean = mean(Precision, na.rm = TRUE),
+  Recall_mean = mean(Recall, na.rm = TRUE),
+  TP_mean = mean(TP, na.rm = TRUE),
+  FP_mean = mean(FP, na.rm = TRUE),
+  TN_mean = mean(TN, na.rm = TRUE),
+  FN_mean = mean(FN, na.rm = TRUE),
+  n_elements = .N
+),
+by = .(path_length, nb_detour, prop_att, size_group,
+       model, approach, simulation_time, latency, bandwidth,
+       data_rate, parasite_rate, meanexp, parasite_meanexp,
+       protocol,  do_evolution, #testattheend,packet_length, 
+       trainonparasite, trainondetour, trainonpath)
+]
+dtf <- dtf_Nevolution[, .(
+  F1_score = mean(F1_score, na.rm = TRUE),
+  F1_sd = sd(F1_score, na.rm = TRUE),
+  F1_ci_lower = mean(F1_score, na.rm = TRUE) - qt(0.975, .N - 1) * sd(F1_score, na.rm = TRUE) / sqrt(.N),
+  F1_ci_upper = mean(F1_score, na.rm = TRUE) + qt(0.975, .N - 1) * sd(F1_score, na.rm = TRUE) / sqrt(.N),
+  Precision_mean = mean(Precision, na.rm = TRUE),
+  Recall_mean = mean(Recall, na.rm = TRUE),
+  TP_mean = mean(TP, na.rm = TRUE),
+  FP_mean = mean(FP, na.rm = TRUE),
+  TN_mean = mean(TN, na.rm = TRUE),
+  FN_mean = mean(FN, na.rm = TRUE),
+  n_elements = .N
+),
+by = .(path_length, nb_detour, prop_att, size_group,
+       model, approach, simulation_time, latency, bandwidth,
+       data_rate, parasite_rate, meanexp, parasite_meanexp,
+       protocol, packet_length, testattheend, do_evolution)
+]
+```
+
+## Data charging 2
+```{r}
+#| label: data charging
+#| echo: true
+
+
+# dtf_rate <- fread ('scratch/data/final_data_172.22.216.6_2025-07-23 08:24:22.014863.csv') # parasite variation
+# dtf_1 <- fread ('scratch/data/final_data_192.168.186.24_2025-08-27 18:14:27.319005.csv')
+# dtf_2 <- fread ('scratch/data/final_data_192.168.186.24_2025-08-29 13:20:09.448879.csv')
+# dtf_3 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-01 10:47:03.715916.csv")
+# dtf_4 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-04 16:33:59.15041.csv")
+# dtf_5 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-04 18:55:38.350686.csv")
+# dtf_6 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-04 19:02:47.284461.csv")
+# dtf_7 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-04 21:22:14.951459.csv")
+# dtf_8 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-09 11:05:38.65594.csv")
+# dtf_9 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-10 08:02:26.074772.csv")
+# dtf_10 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-15 09:46:30.430531.csv")
+# dtf_11 <-fread ("scratch/data/final_data_172.22.216.19_2025-09-15 10:26:28.387563.csv")
+# dtf_12 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-16 09:14:36.447012.csv")
+# dtf_13 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-19 15:34:25.061096.csv")
+# dtf_14 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-23 14:11:04.494716.csv")
+# dtf_15 <-fread ("scratch/data/final_data_192.168.186.24_2025-09-25 12:36:21.002151.csv")
+# dtf_path_0_60 <- fread ("scratch/data/final_data_192.168.186.24_2025-09-30 09:44:50.921539.csv")
+# 
+# dtf <- rbind(dtf_rate, dtf_1, dtf_2, dtf_3, dtf_4, dtf_5, 
+#              dtf_6, dtf_7, dtf_8, dtf_9, dtf_10, 
+#              dtf_11, dtf_12, dtf_13, dtf_14, dtf_15)
+# dtf = dtf_path_0_60
+# 
+# dtf_17 <- fread("scratch/data/final_data_192.168.186.24_2025-10-01 11:32:59.570429.csv")
+# dtf_18 <- fread("scratch/data/final_data_192.168.186.24_2025-10-02 10:43:23.573229.csv")
+# dtf_19 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-02 12:01:41.465127.csv")
+# dtf_20 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-02 13:59:50.068554.csv")
+# dtf_21 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-03 07:41:27.889326.csv")
+# dtf_22 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-06 10:14:56.247532.csv")
+# dtf_23 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-07 10:24:53.668964.csv")
+# dtf_24 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-07 15:54:32.815327.csv")
+# dtf_25 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-07 21:04:46.544561.csv")
+# 
+# 
+# 
+# dtf_26 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-08 11:10:18.330061.csv")
+# dtf_27 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-08 13:21:12.673543.csv")
+# dtf_28 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-08 16:10:27.257053.csv")
+# dtf_29 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-09 08:21:13.438393.csv")
+# dtf_30 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-10 08:54:16.704332.csv")
+# 
+# 
+# 
+# 
+# dtf_31 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-10 11:35:59.285026.csv")
+# dtf_32 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-10 13:16:01.111335.csv")
+
+
+# dtf_33 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-14 08:57:42.038733.csv")
+# dtf_34 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-14 16:11:15.130407.csv")
+# 
+# 
+# dtf_35 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-14 17:44:49.694395.csv")
+# dtf_36 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-15 09:29:36.440951.csv")
+# dtf_37 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-15 13:54:03.22395.csv")
+#dtf_38 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-15 16:54:37.169542.csv")
+#dtf_39 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-15 22:01:53.369243.csv")
+#dtf_40 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-16 09:09:46.037888.csv")
+
+#dtf_41 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-16 16:35:46.569835.csv")
+#dtf_42 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-17 09:11:07.912923.csv")
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-17 11:36:06.986682.csv")
+
+
+# new variables
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-21 09:32:19.869604.csv")
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-21 17:41:22.062814.csv")
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-21 18:10:15.203818.csv")
+# 
+# 
+# # evolution of modele
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-23 08:51:58.594425.csv")
+
+## new size of flow
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-12-08 12:21:02.524897.csv")
+
+# training on several scenarios
+
+
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-10-30 21:32:53.853949.csv")
+#dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2025-11-13 10:36:28.641658.csv")
+
+
+# new size of flow
+dtf_15 <- fread ("scratch/data/final_data_192.168.186.24_2025-12-15 15:01:43.799765.csv")
+dtf_15 <- dtf_15[-1]
+colnames(dtf_15) <- unlist(dtf_15[1])
+dtf_15 <- dtf_15[-1]
+dtf_15$comment = "basic"
+dtf_15$dataset = "dtf_15"
+
+# recapitulatif : 
+dtf_19 <- fread ("scratch/data/final_data_192.168.186.24_2025-12-19 17:12:45.583271.csv")
+dtf_19 <- dtf_19[-1]
+colnames(dtf_19) <- unlist(dtf_19[1])
+dtf_19 <- dtf_19[-1]
+dtf_19$comment = "basic"
+dtf_19$dataset = "dtf_19"
+
+
+# comment: same_size_dataset: 342, 27, 9
+dtf_17 <- fread ("scratch/data/final_data_192.168.186.24_2026-01-06 15:30:02.251972.csv")
+dtf_17 <- dtf_17[-1]
+colnames(dtf_17) <- unlist(dtf_17[1])
+dtf_17 <- dtf_17[-1]
+dtf_17$dataset = "dtf_17"
+
+# comment: same_size_dataset: 27, 9
+#dtf_18 <- fread ("scratch/data/final_data_192.168.186.24_2026-01-09 14:49:32.267192.csv")
+#dtf_18 <- fread ("scratch/data/final_data_192.168.186.24_2026-01-14 12:00:23.671264.csv")
+dtf_18 <- fread ("scratch/data/final_data_192.168.186.24_2026-01-16 15:20:02.999539.csv")
+dtf_18 <- dtf_18[-1]
+colnames(dtf_18) <- unlist(dtf_18[1])
+dtf_18 <- dtf_18[-1]
+dtf_18$dataset = "dtf_18"
+
+# # redo from scratch
+# dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_2026-01-28 10:21:44.857221.csv")
+dtf_20 <- fread ("scratch/data/final_data_192.168.186.24_2026-03-11 10:22:26.608198.csv")
+dtf_20 <- dtf_20[-1]
+colnames(dtf_20) <- unlist(dtf_20[1])
+dtf_20 <- dtf_20[-1]
+dtf_20$dataset = "dtf_20"
+
+# # redo from scratch2
+dtf_21 <- fread ("scratch/data/final_data_192.168.186.24_2026-04-15 09:01:24.217375.csv")
+dtf_21 <- dtf_21[-1]
+colnames(dtf_21) <- unlist(dtf_21[1])
+dtf_21 <- dtf_21[-1]
+dtf_21$dataset = "dtf_21"
+
+# # optimized version with Claude
+dtf_22 <- fread ("scratch/data/final_data_192.168.186.24_2026-05-04 10:32:28.385126.csv")
+dtf_22 <- dtf_22[-1]
+colnames(dtf_22) <- unlist(dtf_22[1])
+dtf_22 <- dtf_22[-1]
+dtf_22$dataset = "dtf_22"
+
+# new merge file optimized with claude
+dtf_23 <- fread ("scratch/data/final_data_192.168.186.24_20260512_102457.csv")
+dtf_23$dataset = "dtf_23"
+dtf_23[comment == "basic2", comment := "basic"]
+
+# new NS3 configuration for parasite flows
+dtf_24 <- fread ("scratch/data/final_data_192.168.186.24_20260520_171616.csv")
+dtf_24$dataset = "dtf_24"
+dtf_24[comment == "basic2", comment := "basic"]
+
+# new NS3 configuration for parasite flows and corect training parasite rate
+dtf_25 <- fread ("scratch/data/final_data_192.168.186.24_20260611_105805.csv")
+dtf_25$temporal_cov = TRUE
+dtf_25$cross_seed = FALSE
+dtf_25[, FPR := FP / (FP + TN)]
+dtf_25$feature_set = "full"
+dtf_25$n_features_reduced = 0
+dtf_25$dataset = "dtf_25"
+dtf_25[comment == "basic2", comment := "basic"]
+
+# final
+dtf_16 <- fread ("scratch/data/final_data_192.168.186.24_20260724_114823.csv")
+dtf_16$temporal_cov = TRUE
+dtf_16$cross_seed = FALSE
+dtf_16[, FPR := FP / (FP + TN)]
+dtf_16$feature_set = "full"
+dtf_16$n_features_reduced = 0
+dtf_16$dataset = "dtf_16"
+dtf_16[comment == "basic2", comment := "basic"]
+
+
+dtf_26 <- fread ("scratch/data/final_data_192.168.186.24_20260727_161651.csv")
+dtf_26$dataset = "dtf_26"
+dtf_26$feature_set = "full"
+dtf_26$n_features_reduced = 0
+dtf_26[comment == "basic2", comment := "basic"]
+
+dtf_27 <- fread ("scratch/data/final_data_192.168.186.24_20260730_185158.csv")
+dtf_27$dataset = "dtf_27"
+dtf_27[comment == "basic2", comment := "basic"]
+# 
+dtf_tmp <- rbind(#dtf_15, dtf_19, dtf_17, dtf_18, 
+                 #dtf_20, dtf_21, dtf_22, dtf_23, dtf_24, 
+                 dtf_25, 
+                 dtf_16
+                 #,dtf_26
+                 , dtf_27) #, dtf_17 dtf_18 #
+rm(dtf_15, dtf_19, dtf_17, dtf_18, dtf_20, dtf_21, dtf_22, dtf_23, dtf_24)
+gc()
+dtf_16 <- dtf_tmp
+rm(dtf_tmp)
+dtf_16[, nb_packets := as.integer(nb_packets)]
+dtf_16[, path_length := as.integer(path_length)]
+#dtf_16[, nb_detour := as.integer(nb_detour)]
+dtf_16[, prop_att := as.numeric(prop_att)]
+dtf_16[, size_group := as.integer(size_group)]
+dtf_16[, F1_score := as.numeric(F1_score)]
+dtf_16[, Precision := as.numeric(Precision)]
+dtf_16[, Recall := as.numeric(Recall)]
+dtf_16[, simulation_time := as.integer(simulation_time)]
+dtf_16[, meanexp := as.numeric(meanexp)]
+dtf_16[, parasite_meanexp := as.numeric(parasite_meanexp)]
+dtf_16[, TP := as.integer(TP)]
+dtf_16[, FN := as.integer(FN)]
+dtf_16[, FP := as.integer(FP)]
+dtf_16[, TN := as.integer(TN)]
+dtf_16[, packet_length := as.integer(packet_length)]
+dtf_16[, testattheend := as.logical(testattheend)]
+dtf_16[, do_evolution := as.logical(do_evolution)]
+#dtf_16[, trainondetour := as.integer(trainondetour)]
+dtf_16[, trainonpath := as.integer(trainonpath)]
+#dtf_16[, packet_length := as.numeric(as.character(packet_length)]
+dtf_16[, directory := basename(dirname(seed))]
+
+str(dtf_16)
+# tmp <- dtf_16[, .(mean_F1_score = mean(F1_score)), by = c("path_length", "nb_detour", 
+#                                                    "prop_att", "size_group", 
+#                                                    "model", "approach", 
+#                                                    "simulation_time", "latency", 
+#                                                    "bandwidth", "data_rate", 
+#                                                    "parasite_rate", "meanexp", 
+#                                                    "parasite_meanexp", "protocol", 
+#                                                    "packet_length", "testattheend"
+#                                                    )]
+dtf_16 = distinct(dtf_16)
+# to_distinct = c("prop_att", "size_group", "path_length", "nb_detour", 
+#                 "model", "approach", "simulation_time", "latency", "bandwidth", 
+#                 "data_rate", "parasite_rate", "meanexp", "parasite_meanexp",
+#                 "protocol", "packet_length", "testattheend", "do_evolution",
+#                 "trainonparasite", "trainondetour", "trainonpath",
+#                 "seed", "directory",
+#                 "FPR", "temporal_cov", "cross_seed") #
+to_distinct = c(#"nb_packets", 
+                "prop_att", "size_group", "path_length", 
+                "nb_detour", "model", "approach", "simulation_time", 
+                "latency", "bandwidth", "data_rate", "parasite_rate", 
+                #"F1_score", "Recall", "Precision", "TP", "TN", "FP", "FN", 
+                #"error","all_err","no_err", 
+                "meanexp","parasite_meanexp",
+                "protocol", "packet_length","testattheend", "do_evolution", 
+                "trainonparasite", "trainondetour", "trainonpath", "seed", "directory",
+                #"FPR", 
+                "temporal_cov", "cross_seed", "feature_set"
+                #, "n_features_reduced"
+                ) #
+dtf_16 <- dtf_16[!duplicated(dtf_16[, ..to_distinct], fromLast = TRUE)]
+#dtf_16[is.na(F1_score) & TP == 0, F1_score := 0]
+
+dtf_16 <- dtf_16[seed != "scratch/ninth/2025-10-16_13-10-05",]
+dtf_16 <- dtf_16[seed != "scratch/ninth/2025-10-16_01-53-23",]
+dtf_16 <- dtf_16[as.POSIXct(sub(".*/([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})$", "\\1", seed),
+                              format = "%Y-%m-%d_%H-%M-%S") <
+                  as.POSIXct("2025-10-16_11-15-00", format = "%Y-%m-%d_%H-%M-%S") |
+                   as.POSIXct(sub(".*/([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})$", "\\1", seed),
+                              format = "%Y-%m-%d_%H-%M-%S") >
+                  as.POSIXct("2025-10-17_13-30-00", format = "%Y-%m-%d_%H-%M-%S")]
+
+seuil <- as.POSIXct("2026-04-21_11-30-00", format = "%Y-%m-%d_%H-%M-%S")
+dtf_16 <- dtf_16[
+  !grepl("/tenth/", seed) |
+  as.POSIXct(
+    sub(".*/tenth/([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})$", "\\1", seed),
+    format = "%Y-%m-%d_%H-%M-%S"
+  ) > seuil
+]
+
+seuil <- as.POSIXct("2026-05-12_11-00-00", format = "%Y-%m-%d_%H-%M-%S")
+dtf_16 <- dtf_16[
+  !grepl("/eleventh/", seed) |
+  as.POSIXct(
+    sub(".*/eleventh/([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})$", "\\1", seed),
+    format = "%Y-%m-%d_%H-%M-%S"
+  ) > seuil
+]
+
+
+list_repertory_short = c("scratch/ninth/2026-01-23_07-32-00",
+                         "scratch/ninth/2026-01-23_08-16-58",
+                         "scratch/ninth/2026-01-23_09-01-51",
+                         "scratch/ninth/2026-01-23_05-12-11",
+                         "scratch/ninth/2026-01-23_06-45-47",
+                         "scratch/ninth/2026-01-23_05-59-10",
+                         "scratch/ninth/2026-01-23_01-55-46",
+                         "scratch/ninth/2026-01-23_02-45-00",
+                         "scratch/ninth/2026-01-23_03-34-19",
+                         "scratch/ninth/2026-01-23_04-23-28",
+                         "scratch/ninth/2026-01-23_01-05-13",
+                         "scratch/ninth/2026-01-23_00-13-48",
+                         "scratch/ninth/2026-01-22_21-37-00",
+                         "scratch/ninth/2026-01-22_23-21-49",
+                         "scratch/ninth/2026-01-22_16-43-07",
+                         "scratch/ninth/2026-01-22_18-43-45",
+                         "scratch/ninth/2026-01-22_19-41-43",
+                         "scratch/ninth/2026-01-22_22-29-56",
+                         "scratch/ninth/2026-01-22_15-39-44",
+                         "scratch/ninth/2026-01-22_14-37-43",
+                         "scratch/ninth/2026-01-22_11-29-14",
+                         "scratch/ninth/2026-01-22_12-33-57",
+                         "scratch/ninth/2026-01-22_13-36-55",
+                         "scratch/ninth/2026-01-22_10-24-18",
+                         "scratch/ninth/2026-01-22_06-41-40",
+                         "scratch/ninth/2026-01-22_05-30-26",
+                         "scratch/ninth/2026-01-22_04-17-43",
+                         "scratch/ninth/2026-01-22_17-45-20",
+                         "scratch/ninth/2026-01-22_03-03-07",
+                         "scratch/ninth/2026-01-22_20-40-07",
+                         "scratch/ninth/2026-01-22_00-23-18",
+                         "scratch/ninth/2026-01-22_09-14-25",
+                         "scratch/ninth/2026-01-22_07-52-00",
+                         "scratch/ninth/2026-01-21_23-01-33",
+                         "scratch/ninth/2026-01-21_18-39-20",
+                         "scratch/ninth/2026-01-21_21-38-06",
+                         "scratch/ninth/2026-01-22_01-40-47",
+                         "scratch/ninth/2026-01-21_20-10-54",
+                         "scratch/ninth/2026-01-21_16-57-39",
+                         "scratch/ninth/2026-02-26_21-30-39",
+                         "scratch/ninth/2026-01-23_09-47-22",
+                         "scratch/ninth/2026-01-21_05-28-19"#,
+#### ATTENTION ICI A REMTTRE QUAND ANALYSES REFAITES
+                         #"scratch/eleventh/2026-05-19_13-17-41",
+                         #"scratch/twelveth/2026-05-20_16-35-10"
+)
+set_seed_short = paste0("/home/dochagnon/ns-3.45/", list_repertory_short)
+dtf_16 <- dtf_16[!(seed %in% set_seed_short),]
+# put back if want to do mean again
+dtf <- dtf_16[, c(lapply(.SD, mean, na.rm = TRUE), .(n_elements = .N)), #, na.rm = TRUE
+              by = .(path_length, nb_detour, prop_att, size_group,
+                     model, approach, simulation_time, latency, bandwidth,
+                     data_rate, parasite_rate, meanexp, parasite_meanexp,
+                     protocol, packet_length, testattheend),
+              .SDcols = c("F1_score", "Precision", "Recall")]
+
+dtf <- dtf_16[, .(
+  F1_score = mean(F1_score, na.rm = TRUE),
+  F1_sd = sd(F1_score, na.rm = TRUE),
+  F1_ci_lower = mean(F1_score, na.rm = TRUE) - qt(0.975, .N - 1) * sd(F1_score, na.rm = TRUE) / sqrt(.N),
+  F1_ci_upper = mean(F1_score, na.rm = TRUE) + qt(0.975, .N - 1) * sd(F1_score, na.rm = TRUE) / sqrt(.N),
+  Precision_mean = mean(Precision, na.rm = TRUE),
+  Recall_mean = mean(Recall, na.rm = TRUE),
+  TP_mean = mean(TP, na.rm = TRUE),
+  FP_mean = mean(FP, na.rm = TRUE),
+  TN_mean = mean(TN, na.rm = TRUE),
+  FN_mean = mean(FN, na.rm = TRUE),
+  n_elements = .N
+),
+by = .(path_length, nb_detour, prop_att, size_group,
+       model, approach, simulation_time, latency, bandwidth,
+       data_rate, parasite_rate, meanexp, parasite_meanexp,
+       protocol, packet_length, testattheend, do_evolution
+       ,trainonparasite, trainondetour, trainonpath
+       )
+]
+
+# # put back if you don't want ot do mean
+# to_distinct = c("prop_att", "size_group", "path_length", "nb_detour", "model", "approach", "simulation_time", "latency", "bandwidth", "data_rate", "parasite_rate")
+# dtf <- unique(dtf_16, by = to_distinct,  fromLast = TRUE)
+
+dtf_boxplot <- dtf_16
+dtf[model %in% c("THRESHOLD", "INTERVAL_DELAY") , approach := "baseline"] 
+dtf_boxplot[model %in% c("THRESHOLD", "INTERVAL_DELAY") , approach := "baseline"] 
+dtf_ = distinct(dtf)
+dtf_boxplot_ = distinct(dtf_boxplot)
+## remove duplicate
+to_distinct2 = c("prop_att", "size_group", "path_length", "nb_detour",
+                "model", "approach", "simulation_time", "latency", "bandwidth",
+                "data_rate", "parasite_rate", "meanexp", "parasite_meanexp",
+                "protocol", "packet_length", "testattheend", "do_evolution",
+                "trainonparasite", "trainondetour", "trainonpath"
+                ) #
+#doublons_complets <- dtf_[duplicated(dtf_[to_distinct]) | duplicated(dtf_[to_distinct], fromLast = TRUE), ]
+#doublons_single <- dtf_[duplicated(dtf_[to_distinct]), ]
+# sans_doublons <- anti_join(dtf_, doublons_single)#, by = to_distinct)
+# dtf_ = sans_doublons
+# dtf_ = distinct(dtf_)
+# rm(doublons_complets, doublons_single, sans_doublons)
+
+
+dtf_[, row_id := .I]
+setorder(dtf_, -row_id)  # ordre décroissant pour prioriser les dernières lignes
+dtf_ <- dtf_[!duplicated(dtf_[, ..to_distinct2], fromLast = TRUE)]
+dtf_[, row_id := NULL]
+
+# to_distinct = c("prop_att", "size_group", "path_length", "nb_detour", 
+#                 "model", "approach", "simulation_time", "latency", "bandwidth", 
+#                 "data_rate", "parasite_rate", "meanexp", "parasite_meanexp",
+#                 "protocol", "packet_length", "testattheend", "do_evolution",
+#                 "trainonparasite", "trainondetour", "trainonpath",
+#                 "seed", "directory",
+#                 "FPR", "temporal_cov", "cross_seed") #
+dtf_boxplot_[, row_id := .I]
+setorder(dtf_boxplot_, -row_id)  # ordre décroissant pour prioriser les dernières lignes
+dtf_boxplot_ <- dtf_boxplot_[!duplicated(dtf_boxplot_[, ..to_distinct], fromLast = TRUE)]
+dtf_boxplot_[, row_id := NULL]
+
+
+
+
+min_att = min (dtf_$prop_att)
+max_att = min(max(dtf_$prop_att))
+#max_detour = max(dtf_$nb_detour) #10 #min(max(dtf_$nb_detour), max(dtf_pkt_3var$nb_detour))
+min_path = min(dtf_$path_length)
+max_path = max(dtf_$path_length) #3 #min(max(dtf_$path_length), max(dtf_pkt_3var$path_length))
+prop_att = unique (dtf_$prop_att)
+
+nb_packets = unique(dtf_$nb_packets)
+dtf_[, group_id := (floor(size_group / 9) *9)]
+dtf_[group_id == 0, group_id := 1]#dtf<- dtf[dtf$nb_packets == nb_packets,]
+dtf_[,parasite_rate := factor(parasite_rate, levels = ordered_parasite_rate, ordered = TRUE)]
+
+dtf_boxplot_[, group_id := (floor(size_group / 9) *9)]
+dtf_boxplot_[group_id == 0, group_id := 1]#dtf<- dtf[dtf$nb_packets == nb_packets,]
+dtf_boxplot_[,parasite_rate := factor(parasite_rate, levels = ordered_parasite_rate, ordered = TRUE)]
+```
+### Available parameters:
+
+<!-- ```{r} -->
+<!-- #| echo: false -->
+<!-- keep = c("model", "prop_att", "size_group", "path_length", "nb_detour", "nb_packets", "group_id", "parasite_rate", "simulation_time") -->
+<!-- # tmp_unique = apply(dtf_[,keep], 2, unique) -->
+<!-- # tmp_unique = lapply(tmp_unique, sort) -->
+<!-- tmp_unique <- dtf_[, lapply(.SD, function(x) sort(unique(x))), .SDcols = keep] -->
+<!-- print(tmp_unique) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # tmp_count = apply(dtf_[,keep], 2, count) -->
+<!-- tmp_count <- dtf_[, lapply(.SD, function(x) count(x)), .SDcols = keep] -->
+<!-- print(tmp_count) -->
+<!-- ``` -->
+
+<!-- ### regourpe size_group -->
+<!-- ```{r} -->
+<!-- str(dtf_$size_group) -->
+<!-- dtf_ -->
+<!-- ``` -->
+
+
+### select specific data
+```{r}
+simtime_range = unique (dtf_$simulation_time)
+nb_packets_range = unique(dtf_$nb_packets)
+
+# dtf <- dtf_[dtf_$nb_detour <= max_detour,]
+# dtf <- dtf[dtf$path_length <= max_path,]
+# dtf <- dtf[dtf$prop_att %in% prop_att,]
+# dtf <- dtf[dtf$nb_packets %in% nb_packets_range,]
+# dtf <- dtf[dtf$size_group <= max_flow,]
+select_detour <- c("0_1_3_5_7_9", "0", "1", "2", "3", "4","5","6", "7","8", "9")
+#select_detour <- c("1_3", "1", "3")
+select_detour <- seq(0,10,1)
+dtf <- dtf_[
+  #nb_detour <= max_detour &
+  #nb_detour %in% select_detour &
+    path_length <= max_path &
+    prop_att %in% prop_att &
+    size_group <= max_flow  
+    & simulation_time == 60
+  #& do_evolution == T
+  & nb_packets >= 500000
+]
+dtf_flow <- dtf
+
+
+dtf_boxplot <- dtf_boxplot_[
+  #nb_detour <= max_detour &
+  #nb_detour %in% select_detour &
+    path_length <= max_path &
+    prop_att %in% prop_att &
+    size_group <= max_flow  
+    & simulation_time == 60
+    #& nb_packets >= 500000
+  #& do_evolution == T
+]
+dtf_flow_boxplot <- dtf_boxplot
+#dtf_flow[, nb_detour := as.integer(nb_detour)]
+```
+
+<!-- ### Available parameters: -->
+<!-- ```{r} -->
+<!-- #| echo: false -->
+<!-- keep = c("model", "prop_att", "size_group", "path_length", "nb_detour", "nb_packets", "group_id", "parasite_rate", "simulation_time") -->
+<!-- tmp_unique <- dtf[, lapply(.SD, function(x) sort(unique(x))), .SDcols = keep] -->
+<!-- print(tmp_unique) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- tmp_count <- dtf[, lapply(.SD, function(x) count(x)), .SDcols = keep] -->
+<!-- print(tmp_count) -->
+<!-- ``` -->
+
+
+### sperate data by flow and data by packet
+```{r}
+
+par(mar = c(0.5, 0,3, 0))
+```
+
+
+<!-- ```{r} -->
+<!-- seperate_dtf_flow_by_simtime <- function(sim) -->
+<!-- { -->
+<!--   return (dtf_flow[simulation_time == sim]) -->
+<!-- } -->
+
+<!-- dtf_flow_simtime = lapply(simtime_range, FUN = seperate_dtf_flow_by_simtime) -->
+<!-- names(dtf_flow_simtime) <- simtime_range -->
+<!-- dtf_flow <- dtf_flow_simtime$`60` -->
+<!-- size_group_max <- function(nb_packets) -->
+<!-- { -->
+<!--   tmp_size_group_prop = round((prop_att * nb_packets)) -->
+<!--   tmp_size_group_inf10000 = which(tmp_size_group_prop <= max_flow) -->
+
+<!--   tmp_comp_size_group_prop = if (length(tmp_size_group_inf10000) < length(tmp_size_group_prop)){ -->
+<!--     c(tmp_size_group_prop[tmp_size_group_inf10000],  -->
+<!--       round(seq.int (max(tmp_size_group_prop[tmp_size_group_inf10000]) + 100, max_flow, length.out =5))) -->
+<!--   } else { -->
+<!--     tmp_size_group_prop -->
+<!--   } -->
+<!--   size_group <- c(round(seq.int (1, (min(prop_att) * nb_packets)-1, length.out =5)), tmp_comp_size_group_prop, -1) -->
+
+<!--   return (size_group) -->
+<!-- } -->
+
+
+<!-- size_group_by_nb_packets = sapply(nb_packets_range,FUN = size_group_max) -->
+<!-- names(size_group_by_nb_packets)= nb_packets_range -->
+<!-- ``` -->
+
+
+### Get model information
+```{r}
+model_info <- fread("scratch/data/_model_info.csv")
+model_info <- distinct(model_info)
+model_info <- model_info[-2]
+
+tmp1<- model_info[model == "SVM" 
+                 & trainondetour == "5"
+                 & group == "9"
+                 #& trainonparasite == "60Mbps"
+                 & nb_hops == "0"
+                 & parasite_rate == "60Mbps"
+                 & do_evolution == T]
+tmp2<- model_info[model == "SVM" 
+                 & trainondetour == nb_att
+                 & group == "9"
+                 #& trainonparasite == "60Mbps"
+                 & nb_hops == "0"
+                 & parasite_rate == "60Mbps"]
+tmp_F <- tmp2[do_evolution == "FALSE"]
+tmp_T<- tmp2[do_evolution == "TRUE"]
+
+tmp<- model_info[model == "SVM" 
+                 & trainondetour == "0"
+                 & group == "9"
+                 #& trainonparasite == "60Mbps"
+                 & nb_hops == "0"
+                 & parasite_rate == "60Mbps"]
+tmp_F <- tmp[do_evolution == "FALSE"]
+tmp_T<- tmp[do_evolution == "TRUE"]
+```
+
+
+## Description
+
+```{r}
+summary(dtf)
+str(dtf)
+
+summary(dtf_flow)
+str(dtf_flow)
+```
+
+### FRP false positive rate
+```{r}
+#dtf_flow_boxplot[, fpr := FP / (FP + TN)]
+
+tmp <- dtf_flow_boxplot[
+  path_length == 0 & nb_detour == 0 & parasite_rate == "120Mbps" & size_group == 9 & trainondetour == 0 & do_evolution == FALSE & directory == "eleventh",]
+recap_fpr <- dtf_flow_boxplot[
+  path_length == 0 & nb_detour == 0 & parasite_rate == "120Mbps" 
+  & size_group == 9 & trainondetour == 0 & do_evolution == FALSE 
+  & directory == "eleventh" & temporal_cov == F & cross_seed == F,
+  .(fpr_med = median(FPR, na.rm = TRUE),
+    fpr_q1  = quantile(FPR, .25, na.rm = TRUE),
+    fpr_q3  = quantile(FPR, .75, na.rm = TRUE),
+    n_runs  = .N),
+  by = model][order(model)]
+print(recap_fpr)
+
+
+```
+
+
+## function de heatmap 
+```{r}
+# Boucle pour générer les graphiques
+automate_heatmaps_nofct <- function(data, x, y, score,  facet, by_combi, output_dir = "heatmaps") { #fill = score
+  # Créez un dossier pour enregistrer les graphiques
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+  # Assurer que les symboles sont gérés proprement
+  x_col <- deparse(substitute(x))
+  y_col <- deparse(substitute(y))
+  facet_col <- deparse(substitute(facet))
+  by_combi_col <- deparse(substitute(by_combi))
+  
+  # Liste des combinaisons uniques de paramètres
+  # combinations <- data %>%
+  #   distinct(model, !!ensym(by_combi))
+  combinations <- unique(data[, .(model, get(by_combi))])
+  setnames(combinations, "V2", by_combi)
+  
+  data_type = "flows"
+  # Générer une heatmap pour chaque combinaison
+  for (i in 1:nrow(combinations)) {
+    current <- combinations[i, ]
+    dyn_title <- paste0("\n### ", by_combi, ": ", current[[by_combi]], "\n\n")
+    cat("\n### ", by_combi, ": ", current[[by_combi]], "\n\n", sep = "")
+    for (fill in score)
+    {
+      fill_col <- deparse(substitute(fill))
+      # Filtrer les données pour la combinaison actuelle
+      # to_plot <- data %>%
+      #   filter(model == current$model, 
+      #          #score == current$score, 
+      #          !!sym(by_combi) == current[[by_combi]])
+      to_plot <- data[model == current$model & !sym(by_combi) == current[[by_combi]]]
+      
+      # Définir le titre
+      title <- paste0("Heatmap for Model: ", current$model, 
+                      ", Score: ", fill, 
+                      ", ",by_combi,": ", current[[by_combi]], " \ndepending on ", facet)
+      
+      # Créer la heatmap
+      g <- ggplot(to_plot, aes(x = !!ensym(x), y = !!ensym(y), fill = !!ensym(fill))) +
+        geom_tile() +
+        scale_fill_gradient(low = "lightgrey", high = "#619cff", limits = c(0, 1)) +
+        facet_wrap(vars(!!ensym(facet))) +
+        theme_minimal() +
+        ggtitle(title)
+      
+      # Sauvegarder la heatmap
+      filename <- paste0(output_dir, "/heatmap_", 
+                         current$model, "_", 
+                         fill, "_",by_combi, 
+                         current[[by_combi]],"_", facet, ".png")
+      
+      print(g)
+      ggsave(filename, plot = g, width = 16, height = 12, dpi=300)
+      
+      if (length(score) == 1)
+      {
+        return (g)
+      }
+    }
+  }
+}
+```
+
+## isolation forest
+### heatmap in 3D 
+#### X cube coloré
+```{r}
+x= "path_length"
+y = "prop_att"
+z = "F1_score"
+colvar = "nb_detour"
+group = 1
+my_model = "ISOF"
+par(mar = c(0.5, 0,3, 0))
+plot_flow <- dtf_flow[model == my_model,]
+
+plot_pkt <- plot_flow[group_id == 1,]
+plot_flow <- plot_flow[group_id == group,]
+
+min_score = min(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+max_score = max(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+min_detour = min(plot_pkt[[colvar]], plot_flow[[colvar]], na.rm = TRUE)
+max_detour = max(plot_pkt[[colvar]], plot_flow[[colvar]], na.rm = TRUE)
+
+
+theta = 220
+phi = 00
+cex = 1
+# set the plotting area into a 1*2 array 
+par(mfrow = c(2,2)) 
+par(mar = c(0.5, 0,3, 0))
+
+
+
+### data with packet repartition and several more variables ####
+# with (plot_pkt, scatter3D(path_length, prop_att, F1_score, colvar = nb_detour, clab = "nb_detour", 
+#                           pch = 19, cex = cex, bty = "b2", 
+#                           theta = theta, phi = phi, 
+#                           main = paste0("Heatmap for F1_score with size_group=", unique (plot_pkt$size_group), 
+#                                         "\n for a repartion by packet with more varibales"), 
+#                           xlab = "path_length",
+#                           ylab ="prop_att", zlab = "F1_score", ticktype = "detailed"
+#                           , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+# ),
+# type= "l",
+# colkey = list(addlines = TRUE)
+# # , nticks = 10
+# )
+with (plot_pkt, scatter3D(
+  x = get(x), y = get(y), z = get(z), 
+  colvar = get(colvar), clab = colvar, 
+  pch = 19, cex = cex, bty = "b2", 
+  theta = theta, phi = phi, 
+  main = paste0(my_model, ": ", z, " \nwith size_group=", unique (group_id)), 
+  xlab = x, ylab =y, zlab = z, 
+  ticktype = "detailed"
+  , clim = c(min_detour, max_detour), 
+  zlim = c(min_score, max_score)
+),
+type= "l",
+colkey = list(addlines = TRUE)
+# , nticks = 10
+)
+#plotrgl()
+
+### data with flow repartition and several more variables ####
+# with (plot_flow, scatter3D(path_length, prop_att, F1_score, colvar = nb_detour, clab = "nb_detour", 
+#                            pch = 19, cex = cex, bty = "b2", 
+#                            theta = theta, phi = phi, 
+#                            main = paste0("Heatmap for F1_score with size_group=", unique (size_group), 
+#                                          "\n for a repartion by flow with more varibales"), 
+#                            xlab = "path_length",
+#                            ylab ="prop_att", zlab = "F1_score", ticktype = "detailed"
+#                            , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+# ),
+# type= "l",
+# colkey = list(addlines = TRUE)
+# # , nticks = 10
+# )
+with(plot_flow, scatter3D(
+  x = get(x), y = get(y), z = get(z),
+  colvar = get(colvar), clab = colvar,
+  pch = 19, cex = cex, bty = "b2",
+  theta = theta, phi = phi,
+  main = paste0(my_model, " : ", z, " with size_group=", unique(group_id)),
+  xlab = x, ylab = y, zlab = z,
+  ticktype = "detailed",
+  clim = c(min_detour, max_detour),
+  zlim = c(min_score, max_score)
+)
+,
+type = "l",
+colkey = list(addlines = TRUE))
+plotrgl()
+```
+
+
+#### cube colorée avec x= path length, y = F1_score, z = nb_detour pour isof
+##### X prop  = 0.1
+fixed group size and proportion of detoured packets
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+par(mar = c(0.5, 0,3, 0))
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 1
+my_model = "ISOF"
+p_att = 0.1
+
+
+plot_flow <- dtf_flow[model == my_model]
+plot_pkt <- plot_flow[group_id == 1 & prop_att == p_att]
+plot_flow <- plot_flow[group_id == group & prop_att == p_att]
+
+# Définir les bornes communes
+min_score <- 0#min(0plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+max_score <- 1#max(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+min_detour <- min(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+max_detour <- max(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+
+par(mfrow = c(2,2)) 
+theta = 220
+phi = 00
+cex = 1
+
+
+with(plot_pkt, scatter3D(
+  x = get(x), y = get(y), z = get(z),
+  colvar = get(colvar), clab = "F1 score",
+  pch = 19, cex = cex, bty = "b2",
+  theta = theta, phi = phi,
+  main = paste0(my_model, ": F1_score with \nsize_group=", unique(group_id),
+                " and prop_att=", p_att),
+  xlab = x, ylab = y, zlab = z,
+  ticktype = "detailed",
+  clim = c(min_score, max_score),
+  ylim = c(min_score, max_score)
+), 
+zlim = c(min_detour,max_detour),
+type= "l",
+colkey = list(addlines = TRUE)
+)
+#plotrgl()
+with(plot_flow, scatter3D(
+  x = get(x), y = get(y), z = get(z),
+  colvar = get(colvar), clab = colvar,
+  pch = 19, cex = cex, bty = "b2",
+  theta = theta, phi = phi,
+  main = paste0(my_model, ": ", y," with \nsize_group=", unique(group_id),
+                " and prop_att=", p_att),
+  xlab = x, ylab = y, zlab = z,
+  ticktype = "detailed",
+  clim = c(min_score, max_score),
+  ylim = c(min_score, max_score)),zlim = c(min_detour,max_detour),
+  type= "l",
+  colkey = list(addlines = TRUE)
+)
+plotrgl()
+```
+
+##### prop  = 0.075
+fixed group size and proportion of detoured packets
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+par(mar = c(0.5, 0,3, 0))
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 1
+my_model = "ISOF"
+p_att = 0.075
+
+plot_flow <- dtf_flow[model == my_model]
+plot_pkt <- plot_flow[group_id == 1 & prop_att == p_att]
+plot_flow <- plot_flow[group_id == group & prop_att == p_att]
+
+# Limites globales pour z (nb_detour) et couleur (F1_score)
+min_score <- 0#min(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+max_score <- 1#max(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+min_detour <- min(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+max_detour <- max(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+
+par(mfrow = c(2,2)) 
+theta = 220
+phi = 00
+cex = 1
+
+with(plot_pkt, scatter3D(
+  x = get(x), y = get(y), z = get(z),
+  colvar = get(colvar), clab = "F1 score",
+  pch = 19, cex = cex, bty = "b2",
+  theta = theta, phi = phi,
+  main = paste0(my_model, ": ",y," with \nsize_group=", unique(group_id),
+                ", prop_att=", p_att),
+  xlab = x, ylab = y, zlab = z,
+  ticktype = "detailed",
+  clim = c(min_score, max_score),
+  ylim = c(min_score, max_score)), zlim = c(min_detour,max_detour),
+  type= "l",
+  colkey = list(addlines = TRUE)
+)
+#plotrgl()
+with(plot_flow, scatter3D(
+  x = get(x), y = get(y), z = get(z),
+  colvar = get(colvar), clab = colvar,
+  pch = 19, cex = cex, bty = "b2",
+  theta = theta, phi = phi,
+  main = paste0(my_model, ": ",y," \nsize_group=", unique(group_id),
+                ", prop_att=", p_att),
+  xlab = x, ylab = y, zlab = z,
+  ticktype = "detailed",
+  clim = c(min_score, max_score),
+  ylim = c(min_score, max_score)), 
+  zlim = c(min_detour,max_detour),
+  type= "l",
+  colkey = list(addlines = TRUE)
+)
+plotrgl()
+```
+
+##### prop  = 0.050
+fixed group size and proportion of detoured packets
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+par(mar = c(0.5, 0,3, 0))
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 1
+my_model = "ISOF"
+p_att = 0.050
+
+plot_flow <- dtf_flow[model == my_model]
+plot_pkt <- plot_flow[group_id == 1 & prop_att == p_att]
+plot_flow <- plot_flow[group_id == group & prop_att == p_att]
+
+# Calculs de bornes communes
+min_score <- 0#min(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+max_score <- 1#max(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+min_detour <- min(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+max_detour <- max(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+
+par(mfrow = c(2,2)) 
+theta = 220
+phi = 00
+cex = 1
+
+
+with(plot_pkt, scatter3D(
+  x = get(x), y = get(y), z = get(z),
+  colvar = get(colvar), clab = "F1 score",
+  pch = 19, cex = cex, bty = "b2",
+  theta = theta, phi = phi,
+  main = paste0(my_model, ": ", y," \nwith group_id=", unique (group_id), " and prop_att=", p_att),
+  xlab = x, ylab = y, zlab = z, ticktype = "detailed",
+  ylim = c(min_score, max_score), clim = c(min_score, max_score))
+  ,zlim = c(min_detour,max_detour),
+  type= "l",
+  colkey = list(addlines = TRUE)
+)
+#plotrgl()
+with (plot_flow, scatter3D(x = get(x), y = get(y), z = get(z),
+                           colvar = get(colvar), clab = "F1 score", 
+                           pch = 19, cex = cex, bty = "b2", 
+                           theta = theta, phi = phi, 
+                           main = paste0("Heatmap for F1_score with size_group=", unique (group_id), " and prop_att=", p_att), 
+                           xlab = x, ylab = y, zlab = z, ticktype = "detailed"
+                           , ylim = c(min_score,max_score), clim = c(min_score,max_score)),zlim = c(min_detour,max_detour),
+      type= "l",
+      colkey = list(addlines = TRUE)
+)
+plotrgl()
+```
+
+
+##### X prop  = 0.025
+fixed group size and proportion of detoured packets
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+par(mar = c(0.5, 0,3, 0))
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 1
+my_model = "ISOF"
+p_att = 0.025
+
+plot_flow <- dtf_flow[model == my_model]
+plot_pkt <- plot_flow[group_id == 1 & prop_att == p_att]
+plot_flow <- plot_flow[group_id == group & prop_att == p_att]
+
+# Calculs de bornes communes
+min_score <- 0#min(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+max_score <- 1#max(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+min_detour <- min(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+max_detour <- max(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+
+par(mfrow = c(2,2)) 
+theta = 220
+phi = 00
+cex = 1
+
+
+with (plot_pkt, scatter3D(x = get(x), y = get(y), z = get(z), 
+                          colvar = get(colvar), clab = colvar, 
+                          pch = 19, cex = cex, bty = "b2", 
+                          theta = theta, phi = phi, 
+                          main = paste0(my_model, ": ", y, "\nwith size_group=", unique(group_id), " and prop_att=", p_att), 
+                          xlab = x, ylab = y, zlab = z, ticktype = "detailed"
+                          , ylim = c(min_score,max_score), clim = c(min_score,max_score)),zlim = c(min_detour,max_detour),
+      type= "l",
+      colkey = list(addlines = TRUE)
+)
+#plotrgl()
+with (plot_flow, scatter3D(x = get(x), y = get(y), z = get(z), 
+                           colvar = get(colvar), clab = colvar, 
+                           pch = 19, cex = cex, bty = "b2", 
+                           theta = theta, phi = phi, 
+                           main = paste0(my_model, ": ", y, "\nwith size_group=", unique (group_id), " and prop_att=", p_att), 
+                           xlab = x, ylab = y, zlab = z, ticktype = "detailed"
+                           , ylim = c(min_score,max_score), clim = c(min_score,max_score)),
+      type= "l",
+      colkey = list(addlines = TRUE)
+)
+plotrgl()
+```
+
+
+##### X prop  = 0.001
+fixed group size and proportion of detoured packets
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+par(mar = c(0.5, 0,3, 0))
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 1
+my_model = "ISOF"
+p_att = 0.001
+
+plot_flow <- dtf_flow[model == my_model]
+plot_pkt <- plot_flow[group_id == 1 & prop_att == p_att]
+plot_flow <- plot_flow[group_id == group & prop_att == p_att]
+
+# Calculs de bornes communes
+min_score <- 0#min(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+max_score <- 1#max(plot_pkt[[y]], plot_flow[[y]], na.rm = TRUE)
+min_detour <- min(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+max_detour <- max(plot_pkt[[z]], plot_flow[[z]], na.rm = TRUE)
+
+par(mfrow = c(2,2)) 
+theta = 220
+phi = 00
+cex = 1
+
+
+with (plot_pkt, scatter3D(x = get(x), y = get(y), z = get(z), 
+                          colvar = get(colvar), clab = colvar,
+                          pch = 19, cex = cex, bty = "b2", 
+                          theta = theta, phi = phi, 
+                          main = paste0(my_model, ": ", y, "\nwith size_group=", unique(group_id), " and prop_att=", p_att), 
+                          xlab = x, ylab = y, zlab = z, ticktype = "detailed"
+                          , ylim = c(min_score,max_score), clim = c(min_score,max_score)),zlim = c(min_detour,max_detour),
+      type= "l",
+      colkey = list(addlines = TRUE)
+)
+#plotrgl()
+with (plot_flow, scatter3D(x = get(x), y = get(y), z = get(z), 
+                           colvar = get(colvar), clab = colvar, 
+                           pch = 19, cex = cex, bty = "b2", 
+                           theta = theta, phi = phi, 
+                           main = paste0(my_model, ": ", y, "\nwith size_group=", group, " and prop_att=", p_att), 
+                           xlab = x, ylab = y, zlab = z, ticktype = "detailed"
+                           , ylim = c(min_score,max_score), clim = c(min_score,max_score)),zlim = c(min_detour,max_detour),
+      type= "l",
+      colkey = list(addlines = TRUE)
+)
+plotrgl()
+```
+
+### X heatmap by detour
+```{r}
+group = 1
+my_model = "ISOF"
+
+plot_flow <- dtf_flow[model == my_model]
+plot_pkt <- plot_flow[group_id == 1]
+plot_flow <- plot_flow[group_id == group]
+
+
+
+
+scores = c("Precision", "Recall", "F1_score")
+
+g_pkt <- automate_heatmaps_nofct(
+  data = plot_pkt,
+  x = "path_length", 
+  y = "prop_att", 
+  score = "F1_score", 
+  facet = "nb_detour", 
+  by_combi = "group_id",
+  output_dir = "heatmaps"
+)
+g_flow <- automate_heatmaps_nofct(
+  data = plot_flow,
+  x = "path_length", 
+  y = "prop_att", 
+  score = "F1_score", 
+  facet = "nb_detour", 
+  by_combi = "group_id",
+  output_dir = "heatmaps"
+)
+#par(mfrow = c(2,1)) 
+#grid.arrange(g_pkt_3var, g_pkt, g_flow)
+```
+### heatmap by detour for each model
+```{r}
+models_dispo = unique(dtf_flow$model)
+group = 1
+plot_flow <- dtf_flow[group_id == group]
+my_model = models_dispo[1]
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  g_flow <- automate_heatmaps_nofct(
+    data = plot_flow_model,
+    x = "path_length", 
+    y = "prop_att", 
+    score = "F1_score", 
+    facet = "nb_detour", 
+    by_combi = "group_id",
+    output_dir = "heatmaps"
+  )
+}
+```
+
+
+### score on a plane (weird colors and planes...) -> ca ne marche pas. 
+```{r}
+# Ajuster les marges du graphique
+par(mar = c(0.5, 0,3, 0))
+# group = 1
+# prop = prop_att[20]
+# my_model = "isof"
+# data = dtf[dtf$group_id == group,]
+# data = data[data$prop_att == prop,]
+# data = data[data$model == my_model,]
+# Trier les données par path_length et nb_detour
+
+
+
+# Trier les données par path_length et nb_detour
+plot_flow = dtf_flow[order(F1_score )] #data_packet$F1_score, ,data_packet$nb_detour, data_packet$path_length
+plot_flow = plot_flow[prop_att == 0.1]
+x = unique(plot_flow$path_length)
+x = x[order(x)]
+y = unique(plot_flow$nb_detour)
+y = y[order(y)]
+z = matrix(plot_flow$F1_score, nrow = length(x), ncol = length(y))
+
+persp3D(x = x, y = y, z = z, colvar = z, clab = "F1 score", pch = 19, cex = 2, bty = "b2", 
+        theta = theta, phi = phi, main = paste0(my_model, ": F1_score \nwith size_group=", group), xlab = "path_length", zlim = c(0,1),clim = c(0,1),
+        ylab = "nb_detour", zlab = "F1_score", ticktype = "detailed", colkey = list(addlines = TRUE))
+
+
+plotrgl()
+```
+
+## comparison of models pour prop = 0.1
+fixed group size and proportion of detoured packets
+
+### X by flows
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 490
+proto = "Udp"
+my_model = "ISOF"
+p_att = 0.025
+models_dispo = unique(dtf_flow$model)
+
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att & protocol == proto]
+models_dispo = unique(plot_flow$model)
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[1]
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  
+  with (plot_flow_model, scatter3D(path_length, F1_score, nb_detour,
+                                   colvar = F1_score, clab = "F1 score",
+                                   pch = 19, cex = cex, bty = "b2",
+                                   theta = theta, phi = phi,
+                                   main = paste0(name,": F1_score; size_group=", group, " \n;prop_att=", p_att, "\nrep_flow"),
+                                   xlab = "path_length",
+                                   ylab ="F1_score", zlab = "nb_detour", ticktype = "detailed"
+                                   , ylim = c(min_score,max_score), clim = c(min_score,max_score)),zlim = c(min_detour,max_detour),
+        type= "l",
+        colkey = list(addlines = TRUE)
+        # , nticks = 10
+  )
+  #plotrgl()
+}
+```
+
+
+
+## X evolution of each model
+
+### by flows
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+par(mar = c(0.5, 0,3, 0))
+#par(mar = c(5.1, 4.1, 4.1, 2.1))
+x= "path_length"
+y = "F1_score"
+z = "nb_detour"
+colvar = "F1_score"
+group = 490
+my_model = "ISOF"
+proto = "Udp"
+models_dispo = unique(dtf_flow$model)
+plot_flow <- dtf_flow[group_id == group & protocol == proto]
+#
+min_score = 0#min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max(dtf_flow$F1_score, na.rm = TRUE)
+min_detour = min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = max( plot_flow$nb_detour, na.rm = TRUE)
+#par(mfrow = c(1,length(prop_att))) 
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+for (my_model in models_dispo){
+  name = my_model
+  par(mfrow = c(3,2)) 
+  
+  plot_flow_model <- plot_flow[model == my_model]
+  for (p_att in prop_att)
+  {
+    
+    plot_flow_prop <- plot_flow_model[prop_att == p_att]
+    if (!(all(is.na(plot_flow_prop$F1_score))))
+    {
+      with (plot_flow_prop, scatter3D(path_length, F1_score, nb_detour, 
+                                      colvar = F1_score, clab = "F1 score", 
+                                      pch = 19, cex = cex, bty = "b2", 
+                                      theta = theta, phi = phi, 
+                                      main = paste0(name,": F1_score; size_group=", unique(group_id), " \n;prop_att=", p_att), 
+                                      xlab = "path_length",
+                                      ylab ="F1_score", zlab = "nb_detour", ticktype = "detailed"
+                                      , ylim = c(min_score,max_score), clim = c(min_score,max_score)),zlim = c(min_detour,max_detour),
+            type= "l",
+            colkey = list(addlines = TRUE)
+            # , nticks = 10
+      )
+      #plotrgl()
+    }
+  }
+  
+}
+```
+
+
+
+
+# confusion matrix
+## ISOF
+```{r}
+tmp_data <- dtf_flow[model == "ISOF"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 0]
+tmp_data <- tmp_data[path_length==10]
+
+# Create the title dynamically based on selected parameters
+title_text <- paste0("F1_score as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n"
+                     #,"Square: no detour ||  +: prediction"
+)
+
+# Créer le graphique avec ggplot2
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = F1_score, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "F1_score",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Precision as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Precision, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Precision",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Recall as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Recall, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Recall",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+tmp_data_001 <- tmp_data[prop_att == 0.001]
+print(tmp_data_001[,..scores])
+print_confusionmatrix(tmp_data_001, 1)
+
+
+```
+## KMEANS
+```{r}
+tmp_data <- dtf_flow[model == "KMEANS"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 0]
+tmp_data <- tmp_data[path_length==10]
+
+# Create the title dynamically based on selected parameters
+title_text <- paste0("F1_score as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n"
+                     #,"Square: no detour ||  +: prediction"
+)
+
+# Créer le graphique avec ggplot2
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = F1_score, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "F1_score",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Precision as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Precision, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Precision",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Recall as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Recall, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Recall",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+tmp_data_001 <- tmp_data[prop_att == 0.001]
+print(tmp_data_001[,..scores])
+print_confusionmatrix(tmp_data_001, 1)
+
+tmp_data_1 <- tmp_data[prop_att == 0.1]
+print(tmp_data_1[,..scores])
+print_confusionmatrix(tmp_data_1, 1)
+
+```
+## PCA then KMEANS
+```{r}
+tmp_data <- dtf_flow[model == "PCAthenKMEANS"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 0]
+tmp_data <- tmp_data[path_length==10]
+
+# Create the title dynamically based on selected parameters
+title_text <- paste0("F1_score as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n"
+                     #,"Square: no detour ||  +: prediction"
+)
+
+# Créer le graphique avec ggplot2
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = F1_score, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "F1_score",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Precision as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Precision, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Precision",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Recall as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Recall, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Recall",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+tmp_data_001 <- tmp_data[prop_att == 0.001]
+print(tmp_data_001[,..scores])
+print_confusionmatrix(tmp_data_001, 1)
+
+tmp_data_1 <- tmp_data[prop_att == 0.1]
+print(tmp_data_1[,..scores])
+print_confusionmatrix(tmp_data_1, 1)
+
+tmp_data_05 <- tmp_data[prop_att == 0.05]
+print(tmp_data_05[,..scores])
+print_confusionmatrix(tmp_data_05, 1)
+
+```
+
+## CART
+```{r}
+tmp_data <- dtf_flow[model == "CART"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 0]
+tmp_data <- tmp_data[path_length==10]
+
+# Create the title dynamically based on selected parameters
+title_text <- paste0("F1_score as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n"
+                     #,"Square: no detour ||  +: prediction"
+)
+
+# Créer le graphique avec ggplot2
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = F1_score, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "F1_score",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Precision as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Precision, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Precision",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Recall as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Recall, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Recall",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+tmp_data_001 <- tmp_data[prop_att == 0.001]
+print(tmp_data_001[,..scores])
+print_confusionmatrix(tmp_data_001, 1)
+
+tmp_data <- dtf_flow[model == "CART"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 1]
+tmp_data <- tmp_data[path_length==10]
+
+tmp_data_001 <- tmp_data[prop_att == 0.001]
+print(tmp_data_001[,..scores])
+print_confusionmatrix(tmp_data_001, 1)
+
+
+```
+## PCA then AE_CLASS
+```{r}
+tmp_data <- dtf_flow[model == "PCAthenAE_CLASS"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 0]
+tmp_data <- tmp_data[path_length==1]
+
+# Create the title dynamically based on selected parameters
+title_text <- paste0("F1_score as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n"
+                     #,"Square: no detour ||  +: prediction"
+)
+
+# Créer le graphique avec ggplot2
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = F1_score, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "F1_score",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Precision as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Precision, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Precision",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+# Créer le graphique avec ggplot2
+title_text <- paste0("Recall as a function of detoured packets proportion\n",
+                     "Path length: ", unique(tmp_data$path_length)," \nNb detoured router: ",unique (tmp_data$nb_detour),"\n")
+ggplot(tmp_data)+#, shape = approach)) +
+  geom_point( aes(x = prop_att, y = Recall, 
+                  size = group_id, color = model), alpha = 0.7) +  # Ajout d'une transparence pour mieux visualiser les points
+  scale_size(range = c(1, 5))+ #c(1, 5)) +  # Ajustement de la plage de tailles
+  ggtitle(title_text) +
+  labs(x = "Porportion of detoured packets",
+       y = "Recall",
+       size = "Size of detourned packets groups",
+       color = "model")+ 
+  ylim(0,1)+
+  theme_minimal() #+  
+
+tmp_data_05 <- tmp_data[prop_att == 0.05]
+print(tmp_data_05[,..scores])
+print_confusionmatrix(tmp_data_05, 1)
+
+tmp_data <- dtf_flow[model == "PCAthenAE_CLASS"]
+tmp_data <- tmp_data[group_id == 1]
+tmp_data <- tmp_data[nb_detour == 3]
+tmp_data <- tmp_data[path_length==9]
+
+tmp_data_001 <- tmp_data[prop_att == 0.001]
+print(tmp_data_001[,..scores])
+print_confusionmatrix(tmp_data_001, 1)
+
+
+```
+
+# for 10s
+```{r}
+dtf_flow_10s <- dtf_flow
+dtf_flow_10s <- dtf_flow_10s[path_length<= 10]
+dtf_flow_10s <- dtf_flow_10s[nb_detour<= 10,]
+dtf_flow_10s <- dtf_flow_10s[group_id != -1]
+
+
+min_group = min( dtf_flow_10s$group_id, na.rm = TRUE)
+max_group = max( dtf_flow_10s$group_id, na.rm = TRUE)
+
+min_score = 0#min(plot_pkt_tmp$F1_score, plot_flow_tmp$F1_score, na.rm = TRUE)
+max_score = 1#max(plot_pkt_tmp$F1_score, plot_flow_tmp$F1_score, na.rm = TRUE)
+min_detour = min( dtf_flow_10s$nb_detour, na.rm = TRUE)
+max_detour = max( dtf_flow_10s$nb_detour, na.rm = TRUE)
+```
+```{r}
+(count(dtf_flow_10s$group_id))
+```
+
+## by flow
+```{r}
+### data with flow repartition and several more variables ####
+my_model = "VAE"
+for (my_model in unique(dtf_flow_10s$model))
+{
+  
+  plot_flow_tmp <- dtf_flow_10s[model == my_model]
+  theta = 220
+  phi = 00
+  cex = 1
+  # set the plotting area into a 1*2 array 
+  par(mar = c(0.5, 0,3, 0))
+  plot.new()
+  
+  par(mfrow = c(2,3)) 
+  par(mar = c(0.5, 0,3, 0))
+  
+  prop = 0.01
+  tmp_model = my_model
+  plot_flow <- plot_flow_tmp[prop_att == prop]
+  with (plot_flow, scatter3D(path_length, group_id, F1_score, colvar = nb_detour, clab = "nb_detour", 
+                             pch = 19, cex = cex, bty = "b2", 
+                             theta = theta, phi = phi, 
+                             main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop), 
+                             xlab = "path_length",
+                             ylab ="group_id", zlab = "F1_score", ticktype = "detailed"
+                             , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+                             ,ylim = c(min_group, max_group)
+  ),
+  type= "l",
+  colkey = list(addlines = TRUE)
+  # , nticks = 10
+  )
+  
+  prop = 0.025
+  plot_flow <- plot_flow_tmp[prop_att == prop]
+  with (plot_flow, scatter3D(path_length, group_id, F1_score, colvar = nb_detour, clab = "nb_detour", 
+                             pch = 19, cex = cex, bty = "b2", 
+                             theta = theta, phi = phi, 
+                             main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop), 
+                             xlab = "path_length",
+                             ylab ="group_id", zlab = "F1_score", ticktype = "detailed"
+                             , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+                             ,ylim = c(min_group, max_group)
+  ),
+  type= "l",
+  colkey = list(addlines = TRUE)
+  # , nticks = 10
+  )
+  
+  
+  prop = 0.050
+  plot_flow <- plot_flow_tmp[prop_att == prop]
+  with (plot_flow, scatter3D(path_length, group_id, F1_score, colvar = nb_detour, clab = "nb_detour", 
+                             pch = 19, cex = cex, bty = "b2", 
+                             theta = theta, phi = phi, 
+                             main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop), 
+                             xlab = "path_length",
+                             ylab ="group_id", zlab = "F1_score", ticktype = "detailed"
+                             , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+                             ,ylim = c(min_group, max_group)
+  ),
+  type= "l",
+  colkey = list(addlines = TRUE)
+  # , nticks = 10
+  )
+  
+  prop = 0.075
+  plot_flow <- plot_flow_tmp[prop_att == prop]
+  with (plot_flow, scatter3D(path_length, group_id, F1_score, colvar = nb_detour, clab = "nb_detour", 
+                             pch = 19, cex = cex, bty = "b2", 
+                             theta = theta, phi = phi, 
+                             main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop), 
+                             xlab = "path_length",
+                             ylab ="group_id", zlab = "F1_score", ticktype = "detailed"
+                             , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+                             ,ylim = c(min_group, max_group)
+  ),
+  type= "l",
+  colkey = list(addlines = TRUE)
+  # , nticks = 10
+  )
+  
+  prop = 0.1
+  plot_flow <- plot_flow_tmp[prop_att == prop]
+  with (plot_flow, scatter3D(path_length, group_id, F1_score, colvar = nb_detour, clab = "nb_detour",
+                             pch = 19, cex = cex, bty = "b2",
+                             theta = theta, phi = phi,
+                             main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop),
+                             xlab = "path_length",
+                             ylab ="group_id", zlab = "F1_score", ticktype = "detailed"
+                             , clim = c(min_detour, max_detour), zlim = c(min_score, max_score)
+                             ,ylim = c(min_group, max_group)
+  ),
+  type= "l",
+  colkey = list(addlines = TRUE)
+  # , nticks = 10
+  )
+}
+```
+
+
+## random flow size
+```{r}
+dtf_flow_10s <- dtf_flow
+dtf_flow_10s <- dtf_flow_10s[dtf_flow_10s$nb_detour<= 10,]
+dtf_flow_10s <- dtf_flow_10s[dtf_flow_10s$group_id == -1,]
+dtf_flow_10s <- dtf_flow_10s[dtf_flow_10s$path_length <= 3,]
+
+min_group = min(dtf_flow_10s$group_id, na.rm = TRUE)
+max_group = ifelse(min_group == max(dtf_flow_10s$group_id, na.rm = TRUE), min_group + 1, max(dtf_flow_10s$group_id, na.rm = TRUE))
+
+min_score = 0#min(plot_pkt_tmp$F1_score, plot_flow_tmp$F1_score, na.rm = TRUE)
+max_score = 1#max(plot_pkt_tmp$F1_score, plot_flow_tmp$F1_score, na.rm = TRUE)
+min_detour = min( dtf_flow_10s$nb_detour, na.rm = TRUE)
+max_detour = max(dtf_flow_10s$nb_detour, na.rm = TRUE)
+```
+```{r}
+(count(dtf_flow_10s$group_id))
+
+```
+
+
+```{r}
+### data with flow repartition and several more variables ####
+for (my_model in unique(dtf_flow_10s$model))
+{
+  
+  plot_flow_tmp <- dtf_flow_10s[dtf_flow_10s$model == my_model,]
+  theta = 220
+  phi = 00
+  cex = 1
+  # set the plotting area into a 1*2 array 
+  par(mar = c(0.5, 0,3, 0))
+  plot.new()
+  
+  par(mfrow = c(2,3)) 
+  par(mar = c(0.5, 0,3, 0))
+  
+  prop = 0.001
+  tmp_model = my_model
+  plot_flow <- plot_flow_tmp[plot_flow_tmp$prop_att == prop,]
+  if (!all(is.na(plot_flow$F1_score)))
+  {
+    with (plot_flow, scatter3D(path_length, nb_detour, F1_score, colvar = F1_score, clab = "F1 score", 
+                               pch = 19, cex = cex, bty = "b2", 
+                               theta = theta, phi = phi, 
+                               main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop, 
+                                             "\n for a repartion by flow with more variables"), 
+                               xlab = "path_length",
+                               ylab ="nb_detour", zlab = "F1_score", ticktype = "detailed"
+                               , clim = c(min_score, max_score), zlim = c(min_score, max_score)
+                               ,ylim = c(min_detour, max_detour)
+    ),
+    type= "l",
+    colkey = list(addlines = TRUE)
+    # , nticks = 10
+    )
+  }else{
+    plot(print_confusionmatrix (plot_flow, 1))
+  }
+  prop = 0.026
+  plot_flow <- plot_flow_tmp[plot_flow_tmp$prop_att == prop,]
+  if (!all(is.na(plot_flow$F1_score)))
+  {
+    with (plot_flow, scatter3D(path_length, nb_detour, F1_score, colvar = F1_score, clab = "F1 score", 
+                               pch = 19, cex = cex, bty = "b2", 
+                               theta = theta, phi = phi, 
+                               main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop, 
+                                             "\n for a repartion by flow with more variables"), 
+                               xlab = "path_length",
+                               ylab ="nb_detour", zlab = "F1_score", ticktype = "detailed"
+                               , clim = c(min_score, max_score), zlim = c(min_score, max_score)
+                               ,ylim = c(min_detour, max_detour)
+    ),
+    type= "l",
+    colkey = list(addlines = TRUE)
+    # , nticks = 10
+    )
+  }else{
+    plot(print_confusionmatrix (plot_flow, 1))
+  }
+  
+  prop = 0.051
+  plot_flow <- plot_flow_tmp[plot_flow_tmp$prop_att == prop,]
+  if (!all(is.na(plot_flow$F1_score)))
+  {
+    with (plot_flow, scatter3D(path_length, nb_detour, F1_score, colvar = F1_score, clab = "F1 score", 
+                               pch = 19, cex = cex, bty = "b2", 
+                               theta = theta, phi = phi, 
+                               main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop, 
+                                             "\n for a repartion by flow with more variables"), 
+                               xlab = "path_length",
+                               ylab ="nb_detour", zlab = "F1_score", ticktype = "detailed"
+                               , clim = c(min_score, max_score), zlim = c(min_score, max_score)
+                               ,ylim = c(min_detour, max_detour)
+    ),
+    type= "l",
+    colkey = list(addlines = TRUE)
+    # , nticks = 10
+    )
+  }else{
+    plot(print_confusionmatrix (plot_flow, 1))
+  }
+  
+  prop = 0.076
+  plot_flow <- plot_flow_tmp[plot_flow_tmp$prop_att == prop,]
+  if (!all(is.na(plot_flow$F1_score)))
+  {
+    with (plot_flow, scatter3D(path_length, nb_detour, F1_score, colvar = F1_score, clab = "F1 score", 
+                               pch = 19, cex = cex, bty = "b2", 
+                               theta = theta, phi = phi, 
+                               main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop, 
+                                             "\n for a repartion by flow with more variables"), 
+                               xlab = "path_length",
+                               ylab ="nb_detour", zlab = "F1_score", ticktype = "detailed"
+                               , clim = c(min_score, max_score), zlim = c(min_score, max_score)
+                               ,ylim = c(min_detour, max_detour)
+    ),
+    type= "l",
+    colkey = list(addlines = TRUE)
+    # , nticks = 10
+    )
+  }else{
+    plot(print_confusionmatrix (plot_flow, 1))
+  }
+  
+  prop = 0.096
+  plot_flow <- plot_flow_tmp[plot_flow_tmp$prop_att == prop,]
+  if (!all(is.na(plot_flow$F1_score)))
+  {
+    with (plot_flow, scatter3D(path_length, nb_detour, F1_score, colvar = F1_score, clab = "F1 score", 
+                               pch = 19, cex = cex, bty = "b2", 
+                               theta = theta, phi = phi, 
+                               main = paste0(tmp_model, ": Heatmap for F1_score with prop=", prop, 
+                                             "\n for a repartion by flow with more variables"), 
+                               xlab = "path_length",
+                               ylab ="nb_detour", zlab = "F1_score", ticktype = "detailed"
+                               , clim = c(min_score, max_score), zlim = c(min_score, max_score)
+                               ,ylim = c(min_detour, max_detour)
+    ),
+    type= "l",
+    colkey = list(addlines = TRUE)
+    # , nticks = 10
+    )
+  }else{
+    plot(print_confusionmatrix (plot_flow, 1))
+  }
+  
+}
+```
+
+
+
+# graphe en fonction du flux parasite. 
+## comparison of models pour prop = 0.1
+fixed group size and proportion of detoured packets
+
+
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+x= "parasite_rate"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #"AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART", "XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group 
+                      & prop_att == p_att 
+                      & path_length == path
+                      &  nb_detour == detour 
+                      & protocol == proto 
+                      & !is.na(parasite_rate)
+                      & model %in% models_dispo]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+#plot_flow <- plot_flow[-222,]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[3]
+plots_no_pca <- list()
+plots_pca <- list()
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  #unique (plot_flow_model$parasite_rate)
+  
+  
+  
+#   plot_long <- plot_flow_model %>%
+#   pivot_longer(
+#     cols = c(F1_score, Precision_mean, Recall_mean),
+#     names_to = "metric",
+#     values_to = "score"
+#   )
+# 
+# p <- ggplot(plot_long, aes(x = parasite_rate, y = score, color = approach)) +
+#   geom_point(aes(shape = interaction(metric, approach)), size = 2, stroke = 1, 
+#              show.legend = c(color = FALSE, shape = FALSE)) +
+#   geom_errorbar(
+#     data = subset(plot_long, metric == "F1_score"),
+#     aes(ymin = F1_ci_lower, ymax = F1_ci_upper, color = approach),
+#     width = 1,
+#     alpha = 0.6
+#     , show.legend = c(color = FALSE)
+#   ) +
+#   scale_color_manual(values = c(
+#     "supervised" = "red",
+#     "unsupervised" = "#619cff",
+#     "baseline" = "#00ba38"
+#   )) +
+#   scale_shape_manual(values = c(
+#     "F1_score.supervised" = 15,
+#     "F1_score.unsupervised" = 16,
+#     "F1_score.baseline" = 17,
+#     "Precision_mean.supervised" = 0,
+#     "Precision_mean.unsupervised" = 1,
+#     "Precision_mean.baseline" = 2,
+#     "Recall_mean.supervised" = 12,
+#     "Recall_mean.unsupervised" = 10,
+#     "Recall_mean.baseline" = 8
+#   )) +
+#   coord_cartesian(ylim = c(min_score, max_score)) +
+#   labs(
+#     title = paste0(name),
+#     x = "Parasite Rate (Mbps)",
+#     y = "Score"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+#   )
+  
+  
+
+  p <- ggplot(plot_flow_model, aes(x = parasite_rate, y = F1_score, color= approach, shape = approach)) +
+    #geom_point(aes(x = parasite_rate, y = Precision_mean, color= approach, shape = approach)) +
+    #geom_point(aes(x = parasite_rate, y = Recall_mean, color= approach, shape = approach)) +
+    geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+    scale_color_manual(
+      values = c(
+        "supervised" = "red",
+        "unsupervised" = "#619cff",
+        "baseline" = "#00ba38"
+      )) +
+
+  # #geom_point(size = 2, stroke = 1.2, show.legend = c(color = FALSE, shape = FALSE)) +
+  geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 1, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_shape_manual(
+      values = c(
+        "supervised" = 15,
+        "unsupervised" = 16,
+        "baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      title = paste0(name), #,":\nPath length=", path+4, "; Detour length=", detour+5),
+      #\nsize_group=", group, "  \nprop_att=", p_att, " F1_score; ;
+      x = "Parasite Rate (Mbps)",
+      y = TeX("$F_1$-Score")
+      ) +
+    theme_minimal()+ #base_size = 15
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    axis.text.x = element_text( angle = 90, hjust = 1, vjust = 0.5)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  ) +
+  guides(
+    shape = guide_legend(order = 1),
+    color = guide_legend(order = 2),
+    fill  = guide_legend(order = 3)
+  )
+  if (my_model %in% names_pca){
+    plots_pca[[my_model]] <- p
+  }else
+  {
+    plots_no_pca[[my_model]] <- p
+  }
+  
+  #print(p)
+}
+#wrap_plots(plots_pca)
+design <- "AB
+           CD
+           EF"
+design <- "ACE
+           BDF"
+wrap_plots(plots_no_pca, design = design)
+
+```
+
+
+### X by flows with CI
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+x= "parasite_rate"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = "0" #0_1_3_5_7_9"
+path = 0
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #"AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART", "XGBOOST","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group 
+                      & prop_att == p_att 
+                      & path_length == path
+                      &  nb_detour == detour 
+                      & protocol == proto 
+                      & !is.na(parasite_rate)
+                      & model %in% models_dispo
+                      & do_evolution == F
+                      ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+#plot_flow <- plot_flow[-222,]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+,"Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = approach)) +
+  geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 0.7, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_color_manual(
+      values = c(
+        "Supervised" = "red",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      #title = paste0(name), #,":\nPath length=", path+4, "; Detour length=", detour+5),
+      #\nsize_group=", group, "  \nprop_att=", p_att, " F1_score; ;
+      x = "Parasite Rate (Mbps)",
+      y = TeX("$F_1$-Score")
+      ) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 20),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+### X by flows with boxplot
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+x= "parasite_rate"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = "0" #0_1_3_5_7_9"
+path = 0
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #"AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART", "XGBOOST","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow_boxplot[group_id == group 
+                      & prop_att == p_att 
+                      & path_length == path
+                      &  nb_detour == detour 
+                      & protocol == proto 
+                      & !is.na(parasite_rate)
+                      & model %in% models_dispo
+                      & do_evolution == F
+                      & directory == "eleventh" #"ninth"
+                      & comment == "basic"
+                      #& ( dataset == "dtf_16")
+                      ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+#plot_flow <- plot_flow[-222,]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+,"Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = approach)) +
+  #geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.7, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T, aes(fill = approach), color = "black"
+               #,coef = 0
+               #,width = 0.4
+               )+
+  
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      #title = paste0(name), #,":\nPath length=", path+4, "; Detour length=", detour+5),
+      #\nsize_group=", group, "  \nprop_att=", p_att, " F1_score; ;
+      x = "Parasite Rate (Mbps)",
+      y = TeX("$F_1$-Score")
+      ) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 20),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X by flows with trainondetour
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+x= "parasite_rate"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 342#9,27,342
+my_model = "ISOF"
+p_att = 0.1
+detour = "0_1_3_5_7_9"#"0_1_3_5_7_9"
+path = 0
+cmt = "basic" #"same_size_dataset" #"basic" #"same_size_dataset"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #"AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART", "XGBOOST","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow_boxplot[group_id == group 
+                      & prop_att == p_att 
+                      & path_length == path
+                      &  nb_detour == detour 
+                      & protocol == proto 
+                      & !is.na(parasite_rate)
+                      & model %in% models_dispo
+                      & do_evolution == F
+                      & comment == cmt
+                      & directory == "eleventh" #"ninth"
+                     # & dataset == "dtf_16"
+                      ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+#plot_flow <- plot_flow[-222,]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+,"Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = approach)) +
+  #geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.7, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T, aes(fill = approach), color = "black"
+               #,coef = 0
+               #,width = 0.4
+               )+
+  
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      #title = paste0(name), #,":\nPath length=", path+4, "; Detour length=", detour+5),
+      #\nsize_group=", group, "  \nprop_att=", p_att, " F1_score; ;
+      x = "Parasite Rate (Mbps)",
+      y = TeX("$F_1$-Score")
+      ) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 20),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+
+# longueur du chemin : graphe en fonction de la longueur du chemin.
+fixed group size and proportion of detoured packets
+
+
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "path_length"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="60Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE", "AE_CLASS", "PCAthenAE_CLASS",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")]
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour & protocol == proto
+                      & parasite_rate == para_rate
+                      & model %in% models_dispo]
+plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[3]
+plots_no_pca <- list()
+plots_pca <- list()
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  #unique (plot_flow_model$parasite_rate)
+  
+  # plot_long <- plot_flow_model %>%
+  # pivot_longer(
+  #   cols = c(F1_score, Precision_mean, Recall_mean),
+  #   names_to = "metric",
+  #   values_to = "score"
+  # )
+
+# p <- ggplot(plot_long, aes(x = path_length, y = score, color = approach)) +
+#   geom_point(aes(shape = interaction(metric, approach)), size = 2, stroke = 1, 
+#              show.legend = c(color = FALSE, shape = FALSE)) +
+#   geom_errorbar(
+#     data = subset(plot_long, metric == "F1_score"),
+#     aes(ymin = F1_ci_lower, ymax = F1_ci_upper, color = approach),
+#     width = 1,
+#     alpha = 0.6
+#     , show.legend = c(color = FALSE)
+#   ) +
+#   scale_color_manual(values = c(
+#     "supervised" = "#f8766d",
+#     "unsupervised" = "#619cff",
+#     "baseline" = "#00ba38"
+#   )) +
+#   scale_shape_manual(values = c(
+#     "F1_score.supervised" = 15,
+#     "F1_score.unsupervised" = 16,
+#     "F1_score.baseline" = 17,
+#     "Precision_mean.supervised" = 0,
+#     "Precision_mean.unsupervised" = 1,
+#     "Precision_mean.baseline" = 2,
+#     "Recall_mean.supervised" = 12,
+#     "Recall_mean.unsupervised" = 10,
+#     "Recall_mean.baseline" = 8
+#   )) +
+#   coord_cartesian(ylim = c(min_score, max_score)) +
+#   labs(
+#     title = paste0(name),
+#     x = "Number of additional on-path routers",
+#     y = "Score"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+#   )
+  
+  p <- ggplot(plot_flow_model, aes(x = path_length, y = F1_score, color= approach, shape = approach)) +
+    geom_point(size = 2,stroke = 1, show.legend = c(color = FALSE, shape = F)) +
+    geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 0.5, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_color_manual(
+      values = c(
+        "supervised" = "#f8766d",
+        "unsupervised" = "#619cff",
+        "baseline" = "#00ba38"
+      )) +
+    scale_shape_manual(
+      values = c(
+        "supervised" = 15,
+        "unsupervised" = 16,
+        "baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      title = paste0(name), #,": \nParasite rate=", para_rate, "; Detour length=", detour+1),
+      #F1_score; \nsize_group=", group, " \nprop_att=", p_att, ";
+      x = "Number of additional on-path routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(breaks = seq(0,10,1), labels = seq(0,10,1), limits = seq(0,10,1))+
+    theme_minimal()#+
+    #theme(axis.text.x = element_text( angle = 90, hjust = 1, vjust = 0.5))
+  if (my_model %in% names_pca){
+    plots_pca[[my_model]] <- p
+  }else
+  {
+    plots_no_pca[[my_model]] <- p
+  }
+  
+  #print(p)
+}
+#wrap_plots(plots_pca)
+# design <- "#AB#
+#            CDEF
+#            GHIJ
+#            KLM#"
+wrap_plots(plots_no_pca, design = design)
+length(unique(plot_flow$seed))
+```
+
+### X by flows with CI
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+library(patchwork)
+
+x= "path_length"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = "0" #0_1_3_5_7_9"
+path = 0
+para_rate ="60Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE", "AE_CLASS", "PCAthenAE_CLASS",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")]
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+graduation = c(0,2,4,6,8,10) #,1,3,5,7,9 )#, )
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour & protocol == proto
+                      & parasite_rate == para_rate
+                      & model %in% models_dispo
+                      & path_length %in% graduation
+                      &do_evolution == F
+                      ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = approach)) +
+  geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 0.5, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-path routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(breaks = graduation, labels = graduation + 4, limits = graduation)+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X by flows with boxplot
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+library(patchwork)
+
+x= "path_length"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9 #342
+my_model = "ISOF"
+p_att = 0.1
+detour = "0" #0_1_3_5_7_9"
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE", "AE_CLASS", "PCAthenAE_CLASS",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")]
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+graduation = c(0,2,4,6,8,10) #,1,3,5,7,9 )#, )
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour & protocol == proto
+                      & parasite_rate == para_rate
+                      & model %in% models_dispo
+                      & path_length %in% graduation
+                      &do_evolution == F
+                      & directory == "eleventh" #"ninth"
+                      & (comment == "basic" | comment == "basic2")
+                      #& dataset == "dtf_16"
+                      ]
+plot_flow$nb_detour = as.numeric(plot_flow$nb_detour)
+plot_flow$path_length = as.factor(plot_flow$path_length)
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = approach)) +
+  #geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-path routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = graduation + 4
+                     #, limits = graduation
+                     )+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X by flows with trainondetour
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+library(patchwork)
+
+x= "path_length"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9 #9,27,342
+my_model = "ISOF"
+p_att = 0.1
+detour = "0_1_3_5_7_9"
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE", "AE_CLASS", "PCAthenAE_CLASS",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")]
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+graduation = c(0,2,4,6,8,10) #,1,3,5,7,9 )#, )
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour 
+                      & protocol == proto
+                      & parasite_rate == para_rate
+                      & model %in% models_dispo
+                      & path_length %in% graduation
+                      #& trainondetour == "0_1_3_5_7_9"
+                      &do_evolution == F
+                      & directory == "eleventh" #"ninth"
+                      & comment == "basic" 
+                      #& dataset == "dtf_16"
+                      ]
+#plot_flow$nb_detour = as.numeric(plot_flow$nb_detour)
+plot_flow$path_length = as.factor(plot_flow$path_length)
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = approach)) +
+  #geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-path routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = graduation + 4
+                     #, limits = graduation
+                     )+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+```
+
+
+
+
+# longueur du detour: graphe en fonction de la longueur du detour.
+
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="60Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate & nb_detour <= 10
+                      & model %in% models_dispo]
+plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[3]
+plots_no_pca <- list()
+plots_pca <- list()
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  #unique (plot_flow_model$parasite_rate)
+  
+  # plot_long <- plot_flow_model %>%
+  # pivot_longer(
+  #   cols = c(F1_score, Precision_mean, Recall_mean),
+  #   names_to = "metric",
+  #   values_to = "score"
+  # )
+
+# p <- ggplot(plot_long, aes(x = nb_detour, y = score, color = approach)) +
+#   geom_point(aes(shape = interaction(metric, approach)), size = 2, stroke = 1, 
+#              show.legend = c(color = FALSE, shape = FALSE)) +
+#   geom_errorbar(
+#     data = subset(plot_long, metric == "F1_score"),
+#     aes(ymin = F1_ci_lower, ymax = F1_ci_upper, color = approach),
+#     width = 1,
+#     alpha = 0.6
+#     , show.legend = c(color = FALSE)
+#   ) +
+#   scale_color_manual(values = c(
+#     "supervised" = "#f8766d",
+#     "unsupervised" = "#619cff",
+#     "baseline" = "#00ba38"
+#   )) +
+#   scale_shape_manual(values = c(
+#     "F1_score.supervised" = 15,
+#     "F1_score.unsupervised" = 16,
+#     "F1_score.baseline" = 17,
+#     "Precision_mean.supervised" = 0,
+#     "Precision_mean.unsupervised" = 1,
+#     "Precision_mean.baseline" = 2,
+#     "Recall_mean.supervised" = 12,
+#     "Recall_mean.unsupervised" = 10,
+#     "Recall_mean.baseline" = 8
+#   )) +
+#   coord_cartesian(ylim = c(min_score, max_score)) +
+#   labs(
+#     title = paste0(name),
+#     x = "Number of on-detour routers",
+#     y = "Score"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+#   )
+
+
+# 
+#   
+  p <- ggplot(plot_flow_model, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+    geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE)) +
+    geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 0.5, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_color_manual(
+      values = c(
+        "supervised" = "#f8766d",
+        "unsupervised" = "#619cff",
+        "baseline" = "#00ba38"
+      )) +
+    scale_shape_manual(
+      values = c(
+        "supervised" = 15,
+        "unsupervised" = 16,
+        "baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      title = paste0(name), #,":  \nParasite Rate=", para_rate, "; Path length=", path+4),
+      #F1_score; \nsize_group=", group, " \nprop_att=", p_att, ";
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(breaks = seq(-1,10,1), labels = seq(0,11,1), limits = seq(-1,10,1))+
+    theme_minimal()#+
+    #theme(axis.text.x = element_text( angle = 90, hjust = 1, vjust = 0.5))
+  if (my_model %in% names_pca){
+    plots_pca[[my_model]] <- p
+  }else
+  {
+    plots_no_pca[[my_model]] <- p
+  }
+  
+  #print(p)
+}
+#wrap_plots(plots_pca)
+# design <- "ACE
+#            BDF"
+wrap_plots(plots_no_pca, design = design)
+
+```
+
+### X by flows with CI
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="60Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+graduation <- c("0","1","3","5","7","9") #, 2,4,6,8,10)
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      #& nb_detour %in% graduation
+                      &nb_detour == trainondetour
+                      & do_evolution == F
+                      ]
+plot_flow <- plot_flow[nb_detour %in% graduation]
+plot_flow$nb_detour = as.numeric(plot_flow$nb_detour)
+graduation = as.numeric(graduation)
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+))]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: SVM",
+  "Supervised: REGLOG",
+  "Unsupervised: DAE",
+  "Unsupervised: VAE"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 0.5, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(breaks = graduation, labels = as.numeric(graduation) +1, limits = graduation)+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 2)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X by flows with boxplot
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM",  "REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+graduation <- c("0","1","3","5","7","9") #, 2,4,6,8,10)
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      #& nb_detour %in% graduation
+                      &nb_detour == trainondetour
+                      & do_evolution == F
+                      & comment == "basic"
+                      & directory == "eleventh" #"ninth"
+                      #& dataset == "dtf_16"
+                      ]
+plot_flow <- plot_flow[nb_detour %in% graduation]
+plot_flow$nb_detour = as.factor(plot_flow$nb_detour)
+graduation = as.numeric(graduation)
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+# min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+# max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  #geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = as.numeric(graduation) +1
+                    # , limits = graduation
+                    )+
+  facet_wrap(~ facet_label, nrow = 2, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+
+### X several training with CI
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="60Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM","REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+graduation <- c("0_1_3_5_7_9", "0","1","3","5","7","9") #2,4,6,8,10, #"0","1","3","5","7","9")#,
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour == "0" #nb_detour #"5" #
+                     & do_evolution == T
+                     ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  geom_errorbar(aes(
+      ymin = F1_ci_lower,
+      ymax = F1_ci_upper,
+      color = "black"
+    ),
+    width = 0.5, # controls horizontal width of the bar
+    alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+
+  ) +
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    #scale_x_discrete(breaks = graduation, labels = graduation +1, limits = graduation)+
+  scale_x_discrete( labels = c(1,2,4,6,8,10))+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X several training with boxplot
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = "0" #"0_1_3_5_7_9" # "0" #"5" #"0_1_3_5_7_9"
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM","REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+graduation <- c("0_1_3_5_7_9", "0","1","3","5","7","9") #2,4,6,8,10, #"0","1","3","5","7","9")#,
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour == detour  #nb_detour #"5" #
+                     & do_evolution == T #F#T
+                     & (comment == "basic" | comment == "basic2")
+                      & directory == "eleventh" #"ninth"
+                      #& dataset == "dtf_16"
+                     ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  # geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    #scale_x_discrete(breaks = graduation, labels = graduation +1, limits = graduation)+
+  scale_x_discrete( labels = c(1,2,4,6,8,10))+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+### X several training with boxplot generic model 1
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = "0_1_3_5_7_9" #"0_1_3_5_7_9" # "0" #"5" #"0_1_3_5_7_9"
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM","REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+
+trainingdetour = "0_1_3_5_7_9"
+trainingdetourplus = "1_2_4_6_8_10"
+graduation <- c(trainingdetour, "0","1","3","5","7","9")
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour == nb_detour  #nb_detour #"5" #
+                     & do_evolution == F #F#T
+                     & (comment == "basic" | comment == "basic2")
+                      & directory == "eleventh" #"ninth"
+                      #& dataset == "dtf_16"
+                     ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+
+plot_flow[,nb_detour := factor(nb_detour, 
+                               levels = c(trainingdetour,"0","1","3","5","7","9"), #,"0_1_3_5_7","0_1_3_5","0_1_3","0_1"
+                               labels = c(trainingdetourplus, "1","2","4","6","8","10"), ordered = T)]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  # geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    #scale_x_discrete(breaks = graduation, labels = graduation +1, limits = graduation)+
+  scale_x_discrete( labels = c("1_2_4_6_8_10", "1","2","4",6,8,10))+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    axis.text.x = element_text(angle = 40,  hjust = 1), 
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X several training with boxplot for several trainingdetour
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9 #9,27,342
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM","REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+trainingdetour = "0_1_3_5_7_9"
+trainingdetourplus = "1_2_4_6_8_10"
+graduation <- c(trainingdetour, "0","1","3","5","7","9") # ,"2","4","6","8","10") #, #"0","1","3","5","7","9")#, "0_1_3_5_7","0_1_3_5","0_1_3","0_1",
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour  %in% c(trainingdetour) #%in% c(trainingdetour) #==  nb_detour 
+                     & do_evolution == T #T #F #T#F
+                     & (comment == "basic")
+                      & directory == "eleventh" #"ninth"
+                      #& dataset == "dtf_16"
+                     ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+#plot_flow[nb_detour == "0_1_3_5_7_9", nb_detour := "1_2_4_6_8_10"]
+#plot_flow[nb_detour %in% c("0","1","3","5","7","9"), nb_detour := as.numeric(nb_detour)+1]
+plot_flow[,nb_detour := factor(nb_detour, 
+                               levels = c(trainingdetour,"0","1","3","5","7","9"), #,"0_1_3_5_7","0_1_3_5","0_1_3","0_1"
+                               labels = c(trainingdetourplus, "1","2","4","6","8","10"), ordered = T)] #,"1_2_4_6_8","1_2_4_6","1_2_4","1_2"
+#graduation = c("1_2_4_6_8_10", "1","2","4","6","8","10")
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  # geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7
+               #, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               # ,position = position_dodge2(preserve = "single"
+               #                             , padding = 1)
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    #scale_x_discrete(breaks = graduation, labels = graduation +1, limits = graduation)+
+   # scale_x_discrete(# breaks = graduation
+   #                  # ,labels = graduation
+   #                  expand = c(0,0, 0,1) 
+   #                   )+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    axis.text.x = element_text(angle = 40,  hjust = 1), #vjust = 0.5,
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+### X several training with boxplot for several trainingdetour and several parasite rate
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9 #9,27,342
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow_boxplot$model)
+models_dispo = models_dispo[! models_dispo %in% c("AE_CONTRACTIVE", "PCAthenAE_CONTRACTIVE",  "AE_SIMPLE",  "PCAthenAE_SIMPLE", "INTERVAL", "PCAthenINTERVAL", "OCSVM", "PCAthenOCSVM")] #, "AE_CLASS", "PCAthenAE_CLASS"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY",
+  "SVM","REGLOG", # "CART","XGBOOST",
+                  "DAE", "VAE") #"KMEANS", "ISOF",, "AE_SPARSE", "AE_LSTM", "AE_CONV1D"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+trainingdetour = "0_1_3_5_7_9"
+trainingdetourplus = "1_2_4_6_8_10"
+graduation <- c(trainingdetour, "0","1","3","5","7","9") # ,"2","4","6","8","10") #, #"0","1","3","5","7","9")#, "0_1_3_5_7","0_1_3_5","0_1_3","0_1",
+plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att 
+                      &  path_length == path 
+                      & protocol == proto
+                      #& parasite_rate == para_rate #& nb_detour <= 10
+                      #
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour  %in% c(trainingdetour) #%in% c(trainingdetour) #==  nb_detour # #"0_1_3_5_7_9" #"5" # ,"0_1_3_5_7","0_1_3_5","0_1_3","0_1"
+                     & do_evolution == T #F #F #T#F
+                     & directory == "twelveth" #"tenth"
+                     & comment == "basic"
+                     #& dataset == "dtf_16"
+                     ]
+#plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
+
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+#min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+#max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+#plot_flow[nb_detour == "0_1_3_5_7_9", nb_detour := "1_2_4_6_8_10"]
+#plot_flow[nb_detour %in% c("0","1","3","5","7","9"), nb_detour := as.numeric(nb_detour)+1]
+plot_flow[,nb_detour := factor(nb_detour, 
+                               levels = c(trainingdetour,"0","1","3","5","7","9"), #,"0_1_3_5_7","0_1_3_5","0_1_3","0_1"
+                               labels = c(trainingdetourplus, "1","2","4","6","8","10"), ordered = T)] #,"1_2_4_6_8","1_2_4_6","1_2_4","1_2"
+#graduation = c("1_2_4_6_8_10", "1","2","4","6","8","10")
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  # geom_point(size = 1,stroke = 2, show.legend = c(color = FALSE, shape = FALSE)) +
+  # geom_errorbar(aes(
+  #     ymin = F1_ci_lower,
+  #     ymax = F1_ci_upper,
+  #     color = "black"
+  #   ),
+  #   width = 0.5, # controls horizontal width of the bar
+  #   alpha = 0.6, show.legend = c(color = FALSE, shape = FALSE),
+  # 
+  # ) +
+  #geom_violin(aes(color = approach), show.legend = F)+
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7
+               #, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               # ,position = position_dodge2(preserve = "single"
+               #                             , padding = 1)
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    #scale_x_discrete(breaks = graduation, labels = graduation +1, limits = graduation)+
+   # scale_x_discrete(# breaks = graduation
+   #                  # ,labels = graduation
+   #                  expand = c(0,0, 0,1) 
+   #                   )+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  # facet_wrap(~ interaction(approach, model), nrow = 2, ncol = 3,
+  #          labeller = labeller(`interaction(approach, model)` = my_labels)
+  #            )+
+  # facet_grid( rows = vars(model),col = vars(approach)
+  #             ,scales = "free", space = "free") + # or facet_wrap(~group)
+  theme_minimal(base_size = 20)+
+  theme(
+    #plot.title = element_text(size = 30),
+    #legend.title = element_text(size = 28),
+    #legend.text = element_text(size = 25),
+    #axis.title = element_text(size = 25),
+    axis.text.x = element_text(angle = 40,  hjust = 1), #vjust = 0.5,
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )
+length(unique(plot_flow$seed))
+```
+
+
+
+
+# specific for poster
+## parasite
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "parasite_rate"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = c("XGBOOST", "DAE") #models_dispo[ models_dispo %in% c("XGBOOST", "DAE")]
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att & path_length == path &  nb_detour == detour & protocol == proto& !is.na(parasite_rate)]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[1]
+plots_no_pca <- list()
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  #unique (plot_flow_model$parasite_rate)
+  p <- ggplot(plot_flow_model, aes(x = parasite_rate, y = F1_score, color= approach)) +
+    geom_point(shape=4, size = 4, stroke = 4) +  #, color = "#619cff"
+    scale_color_manual(
+      values = c(
+        "supervised" = "#f8766d",
+        "unsupervised" = "#619cff"
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      #title = paste0(name), #,": F1_score; \nsize_group=", group, " \nprop_att=", p_att, "; nb_path=", path, "; \nnb_detour=", detour),
+      x = "Parasite Rate (Mbps)", 
+      y = TeX("$F_1$-Score")) +  
+    theme_minimal(base_size = 25)+ 
+    theme(axis.text.x = element_text( angle = 90, hjust = 1, vjust = 0.5),
+    plot.title = element_text(size = 30),
+    legend.title = element_text(size = 28),
+    legend.text = element_text(size = 25),
+    axis.title = element_text(size = 25)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )+ guides(
+  color = "none" 
+)
+  
+    plots_no_pca[[my_model]] <- p
+  
+  
+  #print(p)
+}
+wrap_plots(plots_no_pca)
+
+```
+
+## path
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "path_length"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = c("XGBOOST", "DAE") #models_dispo[ models_dispo %in% c("XGBOOST", "DAE")]
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour & protocol == proto
+                      & parasite_rate == para_rate]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[3]
+plots_no_pca <- list()
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  #unique (plot_flow_model$parasite_rate)
+  p <- ggplot(plot_flow_model, aes(x = path_length, y = F1_score, color= approach)) +
+    geom_point(shape=4, size = 4, stroke = 4) +  
+    scale_color_manual(
+      values = c(
+        "supervised" = "#f8766d",
+        "unsupervised" = "#619cff"
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      #title = paste0(name,": F1_score; \nsize_group=", group, " \nprop_att=", p_att, "; parasite_rate=", para_rate, "; \nnb_detour=", detour),
+      x = "Number of additional on-path routers", #Path Length (Number of routers)", 
+      y = TeX("$F_1$-Score")) +  
+    theme_minimal(base_size = 25)+ 
+    theme(axis.text.x = element_text( angle = 90, hjust = 1, vjust = 0.5),
+    plot.title = element_text(size = 30),
+    legend.title = element_text(size = 28),
+    legend.text = element_text(size = 25),
+    axis.title = element_text(size = 25)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )+ guides(
+  color = "none" 
+)
+    plots_no_pca[[my_model]] <- p
+  
+  
+  #print(p)
+}
+wrap_plots(plots_no_pca)
+
+```
+
+## detour
+```{r}
+# Réinitialiser les marges à leurs valeurs par défaut
+library(patchwork)
+
+x= "nb_detour"
+y = "F1_score"
+#z = "nb_detour"
+colvar = "approach"
+group = 9
+my_model = "ISOF"
+p_att = 0.1
+detour = 0
+path = 0
+para_rate ="120Mbps"
+proto= "Udp"
+models_dispo = unique(dtf_flow$model)
+models_dispo = c("XGBOOST", "DAE") #models_dispo[models_dispo %in% c("XGBOOST", "DAE")]
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+
+plot_flow <- dtf_flow[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate & nb_detour <= 8]
+min_score = 0#dtf_flow[, min(F1_score, na.rm = TRUE)]# min( dtf_flow$F1_score, na.rm = TRUE)
+max_score = 1#max( dtf_flow$F1_score, na.rm = TRUE)
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]#min( plot_flow$nb_detour, na.rm = TRUE)
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]#max( plot_flow$nb_detour, na.rm = TRUE)
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+my_model = models_dispo[3]
+plots_no_pca <- list()
+for (my_model in models_dispo){
+  name = my_model
+  par(mar = c(0.5, 0,2.5, 0))
+  
+  #par(mar = c(4.1, 3.1, 3.1, 1.1))
+  plot_flow_model <- plot_flow[model == my_model]
+  #unique (plot_flow_model$parasite_rate)
+  p <- ggplot(plot_flow_model, aes(x = nb_detour, y = F1_score, color= approach)) + #
+    geom_point(shape=4, size = 4,stroke = 4) +  
+    scale_color_manual(
+      values = c(
+        "supervised" = "#f8766d",
+        "unsupervised" = "#619cff"
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      title = paste0(name),#,": F1_score; \nsize_group=", group, " \nprop_att=", p_att, "; \nparasite_rate=", para_rate, "; \npath_length=", path),
+      x = "Number of additional detour", 
+      y = TeX("$F_1$-Score")) +  
+    theme_minimal(base_size = 25)+ 
+    theme(axis.text.x = element_text( angle = 90, hjust = 1, vjust = 0.5),
+    plot.title = element_text(size = 30),
+    legend.title = element_text(size = 28),
+    legend.text = element_text(size = 25),
+    axis.title = element_text(size = 25)
+    #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
+  )+guides(
+  color = "none" 
+) 
+  
+    plots_no_pca[[my_model]] <- p
+  
+  
+  #print(p)
+}
+wrap_plots(plots_no_pca)
+
+```
+
+# instruction C: ablation de t_stat et t_end
+```{r}
+p_att = 0.1
+proto= "Udp"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY", "SVM",  "REGLOG",  "DAE", "VAE")
+group = 9
+dtf_C <- dtf_flow_boxplot[temporal_cov == FALSE
+                          & cross_seed == FALSE
+                          & feature_set == "full"]
+```
+
+## parasite rate
+```{r}
+detour = "0" #0_1_3_5_7_9"
+path = 0
+
+plot_flow <- dtf_C[group_id == group 
+                      & prop_att == p_att 
+                      & path_length == path
+                      &  nb_detour == detour 
+                      & protocol == proto 
+                      & !is.na(parasite_rate)
+                      & model %in% models_dispo
+                      & do_evolution == F
+                      & directory == "eleventh" #"ninth"
+                      & comment == "basic"
+                      #& ( dataset == "dtf_16")
+                      ]
+min_score = 0
+max_score = 1
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+,"Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T, aes(fill = approach), color = "black"
+               #,coef = 0
+               #,width = 0.4
+               )+
+  
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Parasite Rate (Mbps)",
+      y = TeX("$F_1$-Score")
+      ) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+## path length
+```{r}
+detour = "0" #0_1_3_5_7_9"
+path = 0
+para_rate ="120Mbps"
+
+graduation = c(0,2,4,6,8,10) #,1,3,5,7,9 )#, )
+plot_flow <- dtf_C[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour & protocol == proto
+                      & parasite_rate == para_rate
+                      & model %in% models_dispo
+                      & path_length %in% graduation
+                      &do_evolution == F
+                      & directory == "eleventh" 
+                      & (comment == "basic" | comment == "basic2")
+                      #& dataset == "dtf_16"
+                      ]
+plot_flow$nb_detour = as.numeric(plot_flow$nb_detour)
+plot_flow$path_length = as.factor(plot_flow$path_length)
+
+min_score = 0
+max_score = 1
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]
+
+par(mfrow = c(4,2))
+theta = 190
+phi = 320 
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-path routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = graduation + 4
+                     #, limits = graduation
+                     )+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+## detour length
+
+
+
+```{r}
+detour = 0
+path = 0
+para_rate ="120Mbps"
+
+graduation <- c("0","1","3","5","7","9") #, 2,4,6,8,10)
+plot_flow <- dtf_C[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      & nb_detour ==detour
+                      &nb_detour == trainondetour
+                      & do_evolution == F
+                      & comment == "basic"
+                      & directory == "eleventh" #"ninth"
+                      #& dataset == "dtf_16"
+                      ]
+plot_flow <- plot_flow[nb_detour %in% graduation]
+plot_flow$nb_detour = as.factor(plot_flow$nb_detour)
+graduation = as.numeric(graduation)
+
+min_score = 0
+max_score = 1
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = as.numeric(graduation) +1
+                    # , limits = graduation
+                    )+
+  facet_wrap(~ facet_label, nrow = 2, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+
+
+
+# instruction D: cross seed
+
+```{r}
+p_att = 0.1
+proto= "Udp"
+models_dispo = c( "THRESHOLD", "INTERVAL_DELAY", "SVM",  "REGLOG",  "DAE", "VAE")
+group = 9
+dtf_D <- dtf_flow_boxplot[cross_seed == T
+                          #& temporal_cov == T
+                          & feature_set == "full"]
+```
+
+
+## parasite rate
+```{r}
+detour = "0" #0_1_3_5_7_9"
+path = 0
+
+plot_flow <- dtf_D[group_id == group 
+                      & prop_att == p_att 
+                      & path_length == path
+                      &  nb_detour == detour 
+                      & protocol == proto 
+                      & !is.na(parasite_rate)
+                      & model %in% models_dispo
+                      & do_evolution == F
+                      & directory == "eleventh" #"ninth"
+                      & comment == "basic"
+                      #& ( dataset == "dtf_16")
+                      ]
+min_score = 0
+max_score = 1
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+,"Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T, aes(fill = approach), color = "black"
+               #,coef = 0
+               #,width = 0.4
+               )+
+  
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Parasite Rate (Mbps)",
+      y = TeX("$F_1$-Score")
+      ) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+## path length
+```{r}
+detour = "0" #0_1_3_5_7_9"
+path = 0
+para_rate ="120Mbps"
+
+graduation = c(0,2,4,6,8,10) #,1,3,5,7,9 )#, )
+plot_flow <- dtf_D[group_id == group & prop_att == p_att 
+                      &  nb_detour == detour & protocol == proto
+                      & parasite_rate == para_rate
+                      & model %in% models_dispo
+                      & path_length %in% graduation
+                      &do_evolution == F
+                      & directory == "eleventh" 
+                      & (comment == "basic" | comment == "basic2")
+                      #& dataset == "dtf_16"
+                      ]
+plot_flow$nb_detour = as.numeric(plot_flow$nb_detour)
+plot_flow$path_length = as.factor(plot_flow$path_length)
+
+min_score = 0
+max_score = 1
+
+min_detour =plot_flow[, min(nb_detour, na.rm = TRUE)]
+max_detour = plot_flow[, max(nb_detour, na.rm = TRUE)]
+
+par(mfrow = c(4,2))
+theta = 190
+phi = 320 
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-path routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = graduation + 4
+                     #, limits = graduation
+                     )+
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+## detour length
+
+### eleventh
+
+#### basic scenario
+```{r}
+detour = 0
+path = 0
+para_rate ="120Mbps"
+
+graduation <- c("0","1","3","5","7","9") #, 2,4,6,8,10)
+plot_flow <- dtf_D[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate #& nb_detour <= 10
+                      & model %in% models_dispo
+                      & nb_detour == trainondetour
+                      & do_evolution == F
+                      & comment == "basic"
+                      & directory == "eleventh" #"ninth"
+                      #& dataset == "dtf_16"
+                      ]
+plot_flow <- plot_flow[nb_detour %in% graduation]
+plot_flow$nb_detour = as.factor(plot_flow$nb_detour)
+graduation = as.numeric(graduation)
+
+min_score = 0
+max_score = 1
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE"
+))]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+    scale_x_discrete(#breaks = graduation, 
+                     labels = as.numeric(graduation) +1
+                    # , limits = graduation
+                    )+
+  facet_wrap(~ facet_label, nrow = 2, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+#### X several training with boxplot for several trainingdetour
+```{r}
+
+detour = 0
+path = 0
+para_rate ="120Mbps"
+
+trainingdetour = "0_1_3_5_7_9"
+trainingdetourplus = "1_2_4_6_8_10"
+graduation <- c(trainingdetour, "0","1","3","5","7","9") # ,"2","4","6","8","10") #, #"0","1","3","5","7","9")#, "0_1_3_5_7","0_1_3_5","0_1_3","0_1",
+plot_flow <- dtf_D[group_id == group & prop_att == p_att 
+                      &  path_length == path & protocol == proto
+                      & parasite_rate == para_rate 
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour  %in% c(trainingdetour) 
+                     & do_evolution == T 
+                     & (comment == "basic")
+                      & directory == "eleventh" 
+                      #& dataset == "dtf_16"
+                     ]
+min_score = 0
+max_score = 1
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+plot_flow[,nb_detour := factor(nb_detour, 
+                               levels = c(trainingdetour,"0","1","3","5","7","9"),
+                               labels = c(trainingdetourplus, "1","2","4","6","8","10"), ordered = T)]
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7
+               , aes(fill = approach)
+               , color = "black"
+               ,width = 0.4
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.x = element_text(angle = 40,  hjust = 1), #vjust = 0.5,
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+
+
+### twelveth
+
+```{r}
+detour = 0
+path = 0
+para_rate ="120Mbps"
+
+names_no_pca <- models_dispo[!grepl("^PCAthen", models_dispo)]
+names_pca <- models_dispo[grepl("^PCAthen", models_dispo)]
+trainingdetour = "0_1_3_5_7_9"
+trainingdetourplus = "1_2_4_6_8_10"
+graduation <- c(trainingdetour, "0","1","3","5","7","9") 
+plot_flow <- dtf_D[group_id == group & prop_att == p_att 
+                      &  path_length == path 
+                      & protocol == proto
+                      #& parasite_rate == para_rate #& nb_detour <= 10
+                      #
+                      & model %in% models_dispo
+                      & nb_detour %in% graduation
+                     & trainondetour  %in% c(trainingdetour) 
+                     & do_evolution == T #F #F #T#F
+                     & directory == "twelveth" #"tenth"
+                     & comment == "basic"
+                     #& dataset == "dtf_16"
+                     ]
+min_score = 0
+max_score = 1
+
+par(mfrow = c(4,2))
+theta = 190 #180#220
+phi = 320 #280
+cex = 1
+
+plot_flow[approach == "baseline", approach := "Baseline"]
+plot_flow[approach == "unsupervised", approach := "Unsupervised"]
+plot_flow[approach == "supervised", approach := "Supervised"]
+plot_flow[, facet_label := paste(approach, model, sep = ": ")]
+plot_flow[, facet_label := factor(facet_label, levels = c(
+  "Baseline: THRESHOLD",
+  "Supervised: SVM",
+  "Unsupervised: DAE",
+  "Baseline: INTERVAL_DELAY",
+  "Supervised: REGLOG",
+  "Unsupervised: VAE",
+  "Supervised: XGBOOST"
+))]
+plot_flow[,nb_detour := factor(nb_detour, 
+                               levels = c(trainingdetour,"0","1","3","5","7","9"), 
+                               labels = c(trainingdetourplus, "1","2","4","6","8","10"), ordered = T)] 
+# Create the faceted plot
+ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = approach)) +
+  geom_boxplot(outlier.color = "black", show.legend = F, notch = F
+               , staplewidth = 0.7
+               #, varwidth = T
+               , aes(fill = approach)
+               , color = "black"
+               #,coef = 0
+               ,width = 0.4
+               # ,position = position_dodge2(preserve = "single"
+               #                             , padding = 1)
+               )+
+    scale_color_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_fill_manual(
+      values = c(
+        "Supervised" = "#f8766d",
+        "Unsupervised" = "#619cff",
+        "Baseline" = "#00ba38"
+      )) +
+  scale_shape_manual(
+      values = c(
+        "Supervised" = 15,
+        "Unsupervised" = 16,
+        "Baseline" = 17
+      )) +
+    coord_cartesian(ylim = c(min_score, max_score)) +  # ← la bonne méthode
+    labs(
+      x = "Number of on-detour routers",
+      y = TeX("$F_1$-Score")) +
+  facet_wrap(~ facet_label, nrow = 3, ncol = 3)+
+  theme_minimal(base_size = 20)+
+  theme(
+    axis.text.x = element_text(angle = 40,  hjust = 1), #vjust = 0.5,
+    axis.text.y = element_text(size = 15),
+    panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+  panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+  )
+length(unique(plot_flow$seed))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

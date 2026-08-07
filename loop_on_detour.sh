@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# set -euxo pipefail
+while getopts f:t:l:b:a:e:o:m:x:r: flag
+do
+    case "${flag}" in
+        f) file=${OPTARG};;
+        t) simulationtime=${OPTARG};;
+        l) latency=${OPTARG};;
+        b) bandwidth=${OPTARG};;
+        a) datarateaccess=${OPTARG};;
+        e) datarateext=${OPTARG};;
+        o) packetsize=${OPTARG};;
+        m) meanexp=${OPTARG};;
+        x) meanexppara=${OPTARG};;
+#        d) detour=${OPTARG};;
+        r) repertory=${OPTARG};;
+    esac
+done
+
+: ${file:="ninth"}
+: ${simulationtime:=60}
+: ${latency:="5ms"}
+: ${bandwidth:="120Mbps"}
+: ${datarateaccess:="10Mbps"}
+: ${datarateext:="60Mbps"}
+: ${packetsize:=12000}
+#: ${detour:=0}
+: ${meanexp:=0.5}
+: ${meanexppara:=0.5}
+: ${repertory:="${file}"}
+
+time=$(LC_NUMERIC=C printf "%.6f" $simulationtime)
+meanA=$(LC_NUMERIC=C printf "%.6f" $meanexp)
+meanE=$(LC_NUMERIC=C printf "%.6f" $meanexppara)
+unit=$(echo "$datarateext" | sed -n 's/^[0-9.]\+\(.*\)$/\1/p')
+number_bandwidth=$(echo "$bandwidth" | sed -n 's/^\([0-9.]\+\).*/\1/p')
+number_bdw=$(echo "$number_bandwidth * 2" | bc)
+number_bdw_plus_half=$(echo "$number_bandwidth * 1.25" | bc| cut -d'.' -f1)
+half_number_bdw=$(echo "$number_bandwidth * 0.5" | bc| cut -d'.' -f1)
+echo "number_bdw: $number_bdw"
+echo "number_bdw_plus_half: $number_bdw_plus_half"
+echo "half_number_bdw: $half_number_bdw"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/bash_function.sh"
+
+
+./ns3 clean
+./ns3 configure --enable-examples --enable-tests
+./ns3 build
+
+
+
+current_jobs=0
+
+
+
+path_size=(0) # 2 4 8 1 3 5 9 6 10 7)
+detour_size=(0 1 3 5 7 9 2 4 6 8 10)
+vals=(60) # 40 120) #1 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200 210 220 230 240)
+#(10 20 30 40 50 80 110 $number_bandwidth 140 170 $number_bdw) # 60) # 1 60 
+
+for intermediate in "${path_size[@]}"; #0..10
+do
+    for detour in "${detour_size[@]}"; #{0..10}; #10}; 
+    do
+        
+        for rateext in "${vals[@]}"; do
+
+                datarateext="${rateext}${unit}"
+                echo "Running with : $datarateext"
+                prefixUDP="${repertory}/T${time}s_h${intermediate}_a${detour}_L${latency}_B${bandwidth}_Ra${datarateaccess}_Re${datarateext}_P${packetsize}b_Udp_Ma${meanA}_Me${meanE}_"
+
+                # prefixTcp="${repertory}/T${time}s_h${intermediate}_a${detour}_L${latency}_B${bandwidth}_Ra${datarateaccess}_Re${datarateext}_P${packetsize}b_Tcp_Ma${meanA}_Me${meanE}_"
+                
+                # if file already exist do not resimulate
+                FILE=${prefixUDP}trace_all_output_stats.csv
+                if [ ! -f "$FILE" ]; then
+                    check_mem
+
+                    echo "Running with : $prefixUDP"
+                    bash ./scratch/execute.sh -f $file -r $repertory -t $simulationtime -l $latency -b $bandwidth -a $datarateaccess -e $datarateext -o $packetsize -p Udp   -i $intermediate -d $detour -m $meanexp -x $meanexppara > ${prefixUDP}output.log  &
+                    
+                    
+                    # ((current_jobs++))
+                    # if [[ $current_jobs -ge $max_jobs ]]; then
+                    #     echo "🛑 Too many jobs: ${current_jobs}. Waiting..."
+                    #     wait -n  # Wait for at least one job to finish
+                    #     ((current_jobs--))
+                    # fi
+
+                    # check_mem
+                    # echo "Running with : $prefixTcp"
+                    # bash ./scratch/execute.sh -f $file -r $repertory -t $simulationtime -l $latency -b $bandwidth -a $datarateaccess -e $datarateext -o $packetsize -p Tcp   -i $intermediate -d $detour -m $meanexp -x $meanexppara > ${prefixTcp}output.log  &
+                    
+                    # pids+=($!)
+                    
+                    # ((current_jobs++))
+                    # if [[ $current_jobs -ge $max_jobs ]]; then
+                    #     echo "🛑 Too many jobs: ${current_jobs}. Waiting..."
+                    #     wait -n  # Wait for at least one job to finish
+                    #     ((current_jobs--))
+                    # fi
+
+                fi
+              
+        done
+        # done
+        
+    done
+     
+done
+
+echo "All jobs completed. Waiting for remaining processes to finish..."
+
+
+wait
+
+
+
+echo "done loop NS3"
+                
+# bash ./scratch/merge_file_ns3.sh -f $file -r $repertory -t $simulationtime -l $latency -b $bandwidth -a $datarateaccess -o $packetsize -m $meanexp -x $meanexppara -n detour #-e $datarateext 
+
+# echo "done merging NS3 files"
+# Rscript ./scratch/ninth/generation.R -f $file -r $repertory -t $simulationtime -l $latency -b $bandwidth -a $datarateaccess  -o $packetsize -m $meanexp -x $meanexppara  -n detour #-e $datarateext
+# echo "done analyzing packets"
+
+
+# Rscript ./scratch/merge_file.R
+# echo "done merging R files"

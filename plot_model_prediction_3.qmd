@@ -1,0 +1,2611 @@
+---
+title: "Graphes manuscrit — 6 modèles (unified)"
+format:
+  pdf:
+    fig_height: 16
+    fig_width: 50
+    toc: true
+    number-sections: true
+    colorlinks: true
+    toc-depth: 5
+    toc-title: Table des matières
+editor_options:
+  chunk_output_type: console
+---
+
+# Chargement des bibliothèques
+
+```{r libraries}
+setwd("~/Documents/ns-3.45")
+gc()
+
+directory <- "./scratch/ninth/"
+source(file = paste0(directory, "real_data.R"))
+source(file = paste0(directory, "variation_generator_function.R"))
+source(file = paste0(directory, "variation_generator_function_optimized.R"))
+source(file = paste0(directory, "model_function.R"))   # version réduite (6 modèles)
+source(file = paste0(directory, "setup_function.R"))
+source(file = paste0(directory, "setup_param.R"))
+
+library(data.table);  setDTthreads(percent = 65)
+library(caret)
+library(cluster)
+library(DescTools)
+library(digest)
+library(e1071)
+library(FactoMineR)
+library(getip)
+library(ggplot2)
+library(glmnet)
+library(igraph)
+library(isotree)
+library(keras3)
+library(magrittr)
+library(patchwork)
+library(randomForest)
+library(rpart)
+library(sads)
+library(tensorflow, exclude = c("shape", "set_random_seed"))
+library(xgboost)
+library(zeallot)
+```
+
+# Paramètres de simulation
+
+> **À configurer** : adapter `prefix_m` et `prefix_data` à chaque campagne.
+
+```{r params}
+prefix_m <- paste0(
+  "scratch/eleventh/2026-05-19_13-17-41",
+  "/T60.000000s_L5ms_B120Mbps_Ra10Mbps_P12000b_Ma0.500000_Me0.500000_merge_parasite_part_path"
+  # "scratch/twelveth/2026-05-20_16-35-10",
+  # "/T60.000000s_L5ms_B120Mbps_Ra10Mbps_P12000b_Ma0.500000_Me0.500000_merge_path"
+)
+prefix_data <- paste0(
+  "scratch/data/eleven/T60.000000s_L5ms_B120Mbps_Ra10Mbps_P12000b_Ma0.500000_Me0.500000",
+  "_merge_parasite_part_path"
+ #  "scratch/data/twelve/T60.000000s_L5ms_B120Mbps_Ra10Mbps_P12000b_Ma0.500000_Me0.500000",
+ # "_merge_path"
+)
+
+# Paramètres de filtrage
+proto         <- "Udp"
+nb_hops       <- 0
+nb_att        <- 0
+parasite_rate <- "100Mbps"
+prop          <- 0.1
+group         <- 9
+
+# Les 6 modèles : interval_delay, threshold, svm, reg_log, dae, vae
+# Correspondent aux indices c(8, 10, 15, 16, 22, 23) dans models_list
+models <- models_list[c(8, 10, 15, 16, 22, 23)]
+model  <- models[[1]]
+set.seed(1997)
+
+# ---- Dérivation automatique des préfixes (identique à generation_unified.R) ----
+src        <- "10.1.9.1"
+prefix_rep <- sub(".*(scratch/.*)/[^/]+$", "\\1", prefix_m)
+
+path_parts      <- strsplit(prefix_m, "/")[[1]]
+last_part       <- tail(path_parts, n = 1)
+px              <- strsplit(last_part, "_")[[1]]
+prefix_time         <- substring(px[1], 2)
+prefix_latency      <- substring(px[2], 2)
+prefix_bandwidth    <- substring(px[3], 2)
+prefix_rateaccess   <- substring(px[4], 3)
+prefix_packetlength <- substring(px[5], 2)
+prefix_meanexp      <- substring(px[6], 3)
+prefix_meanexppara  <- substring(px[7], 3)
+rm(px)
+
+cat("prefix_rep      :", prefix_rep, "\n")
+cat("prefix_time     :", prefix_time, "\n")
+cat("prefix_bandwidth:", prefix_bandwidth, "\n")
+cat("prefix_rateaccess:", prefix_rateaccess, "\n")
+
+ipaddr     <- getip("internal")
+pid_suffix <- Sys.getpid()
+output_dir <- paste0("./", ipaddr, "/_pid", pid_suffix, "/")
+if (!dir.exists(output_dir)) dir.create(output_dir, showWarnings = FALSE)
+dir.create(paste0(directory, "model/"), showWarnings = FALSE)
+dir.create("scratch/figure", showWarnings = FALSE, recursive = TRUE)
+
+output_sim <- paste0(output_dir, "_sim", prefix_time, "_/")
+dir.create(output_sim, showWarnings = FALSE)
+
+fig_suffix <- paste0(nb_hops, "-", nb_att, "-", parasite_rate, "_",
+                     format(Sys.Date(), "%Y-%m-%d"))
+
+# Palette et thème communs
+COL_DETOUR  <- "#854a4c" #  "#D55E00"
+COL_DIRECT <- "#447794" #"#56B4E9"
+COL_TRAIN   <- "black"
+COL_FP <- "#caa386"
+COL_FN <- "#dbd8c7" #"#56B4E9" #"#dbd8c7"
+
+theme_ms <- function(base = 25) {
+  theme_minimal(base_size = base) +
+    theme(
+      plot.title       = element_text(size = base + 3),
+      legend.title     = element_text(size = base + 2),
+      legend.text      = element_text(size = base),
+      axis.title       = element_text(size = base),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      plot.background  = element_rect(fill = "transparent", color = NA),
+      panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+      panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
+    )
+}
+```
+
+# Chargement des données
+
+```{r load-data}
+merge_stats <- fread(
+  paste0(prefix_data, "_trace_all_output_stats.csv"),
+  sep = ";", verbose = TRUE, showProgress = TRUE, fill = TRUE
+)
+cat("[INFO] Paquets chargés :", nrow(merge_stats), "\n")
+df <- merge_stats[protocol %in% c("UDP", "17", "TCP")]
+rm(merge_stats); gc()
+```
+
+# Construction du jeu de données
+
+## Packets a0_a1
+
+```{r build-a0a1}
+tmp_rate <- df[
+  proto         == proto         &
+  extra_router  == nb_hops       &
+  extra_detour  == nb_att        &
+  parasite_rate == parasite_rate
+]
+
+df_healthy <- tmp_rate[src_ip == src & dst_ip == "10.1.2.1"]
+df_detour  <- tmp_rate[src_ip == src & dst_ip == "10.1.3.1"]
+
+prefix_pcap <- paste0(
+  prefix_rep, "/T", prefix_time,
+  "_h", nb_hops, "_a", nb_att,
+  "_L", prefix_latency, "_B", prefix_bandwidth,
+  "_Ra", prefix_rateaccess, "_Re", parasite_rate,
+  "_P", prefix_packetlength, "_", proto,
+  "_Ma", prefix_meanexp, "_Me", prefix_meanexppara, "_"
+)
+cat("[INFO] Préfixe pcap :", prefix_pcap, "\n")
+
+a0_output_H <- df_healthy[file == paste0(prefix_pcap, "trace-access0-access_access0-0-0.pcap")]
+a1_input_H  <- df_healthy[file == paste0(prefix_pcap, "trace-dist1-access1-direct_access1-1-0.pcap")]
+a0_output_D <- df_detour[ file == paste0(prefix_pcap, "trace-access0-access_access0-0-0.pcap")]
+a1_input_D  <- df_detour[ file == paste0(prefix_pcap, "trace-dist1-access1-detour_access1-1-1.pcap")]
+
+stopifnot(nrow(a0_output_H) > 0, nrow(a1_input_H) > 0,
+          nrow(a0_output_D) > 0, nrow(a1_input_D) > 0)
+
+n_H     <- min(nrow(a1_input_H), nrow(a0_output_H))
+n_D     <- min(nrow(a1_input_D), nrow(a0_output_D))
+a0_a1_H <- fusion_starttoend(end = a1_input_H[1:n_H], start = a0_output_H[1:n_H], "healthy")
+a0_a1_D <- fusion_starttoend(end = a1_input_D[1:n_D], start = a0_output_D[1:n_D], "detour")
+
+a0_a1 <- rbindlist(list(a0_a1_D, a0_a1_H))
+a0_a1[, c("start_file", "end_file", "source_file", "start_packet_num") := NULL]
+
+lookup <- c(t_start = "start_timestamp", packet_length = "length",
+            attacked = "type", delay = "delay_path", t_end = "end_timestamp")
+old_n <- unname(lookup); new_n <- names(lookup)
+setnames(a0_a1, old = old_n[old_n %in% names(a0_a1)],
+                new = new_n[old_n %in% names(a0_a1)])
+a0_a1[, attacked := fifelse(attacked == "detour", 1L, 0L)]
+a0_a1[, attacked := factor(attacked)]
+nb_packets <- nrow(df_healthy)
+cat("[INFO] a0_a1:", nrow(a0_a1), "| healthy:", nrow(a0_a1[attacked==0]),
+    "| detour:", nrow(a0_a1[attacked==1]), "\n")
+```
+
+## Jeu de flux
+
+```{r build-flow}
+dtf <- mix_to_flow_fast(
+  dtf_att0 = a0_a1[attacked == 0],
+  dtf_attn = a0_a1[attacked == 1],
+  prop = prop, group = group
+)
+if (is.null(dtf) || nrow(dtf) == 0) stop("[ERREUR] dtf vide")
+cat("[INFO] Proportion attaqués :", round(dtf[, mean(attacked == 1)], 4), "\n")
+
+if (abs(round(dtf[, mean(attacked == 1)], 4) - prop) > 0.01)
+  warning("[WARN] Écart de proportion > 1% — vérifier les données sources")
+```
+
+## Partition train / test (base)
+
+```{r partition}
+# current_param de base — current_param$model sera mis à jour dans chaque chunk modèle
+current_param <- list(
+  simulation_time  = unique(a0_a1[, simulation_time]),
+  latency          = unique(a0_a1[, latency]),
+  bandwidth        = unique(a0_a1[, bandwidth]),
+  data_rate        = unique(a0_a1[, data_rate]),
+  parasite_rate    = unique(a0_a1[, parasite_rate]),
+  meanexp          = unique(a0_a1[, meanexp]),
+  parasite_meanexp = unique(a0_a1[, meanexppara]),
+  nb_packets       = nb_packets,
+  nb_hops          = nb_hops,
+  nb_att           = nb_att,
+  prop             = prop,
+  group            = group,
+  model            = model$name,
+  proto            = proto,
+  do_pca           = FALSE,
+  testattheend     = TRUE,
+  my_seed          = prefix_rep,
+  do_evolution     = FALSE,
+  trainonparasite  = parasite_rate,
+  trainondetour    = as.character(nb_att),
+  trainonpath      = as.character(nb_hops),
+  do_0             = FALSE
+)
+
+# Partition avec le premier modèle (référence commune pour les graphes de délai)
+local_dtf <- if (isTRUE((model$params)$is_timeserie)) copy(a0_a1) else copy(dtf)
+keep       <- setdiff(names(local_dtf), remove_detail)
+c(train_set_sup, test_set_sup) %<-% partition(
+  dtf = local_dtf[, ..keep],
+  unsupervised = FALSE,
+  p            = (model$params)$p_partition,
+  do_pca = FALSE, is_timeserie = (model$params)$is_timeserie,
+  current_param = current_param
+)
+test_set_sup  <- test_set_sup[ rowSums(is.na(test_set_sup))  <= ncol(test_set_sup)  / 2]
+train_set_sup <- train_set_sup[rowSums(is.na(train_set_sup)) <= ncol(train_set_sup) / 2]
+stopifnot(nrow(test_set_sup[attacked == 1]) > 0)
+cat("[INFO][supervised] train:", nrow(train_set_sup), "| test:", nrow(test_set_sup), "\n")
+
+c(train_set_unsup, test_set_unsup) %<-% partition(
+  dtf = local_dtf[, ..keep],
+  unsupervised = TRUE,
+  p            = (model$params)$p_partition,
+  do_pca = FALSE, is_timeserie = (model$params)$is_timeserie,
+  current_param = current_param
+)
+test_set_unsup  <- test_set_unsup[ rowSums(is.na(test_set_unsup))  <= ncol(test_set_unsup)  / 2]
+train_set_unsup <- train_set_unsup[rowSums(is.na(train_set_unsup)) <= ncol(train_set_unsup) / 2]
+stopifnot(nrow(test_set_unsup[attacked == 1]) > 0)
+cat("[INFO][unsupervised] train:", nrow(train_set_unsup), "| test:", nrow(test_set_unsup), "\n")
+```
+
+# stats: duree d'un flux
+```{r}
+dtf[, duree := t_end - t_start]
+summary(dtf$duree)          # attendu : mediane ~0.010 s
+quantile(dtf$duree, c(.5,.9,.99))
+
+table(dtf$packet_size)   # ou la colonne length du CSV brut
+```
+## pour 342 packet 
+> summary(dtf$duree)          # attendu : mediane ~0.010 s
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1888  0.1894  0.1969  0.4231  0.4081  2.8665 
+> quantile(dtf$duree, c(.5,.9,.99))
+     50%      90%      99% 
+0.196907 1.021800 2.051628 
+> table(dtf$packet_size)   # ou la colonne length du CSV brut
+12000 
+  192 
+
+## pour 27 packets
+> summary(dtf$duree)          # attendu : mediane ~0.010 s
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.02521 0.02553 0.02583 0.03936 0.03171 3.55215 
+> quantile(dtf$duree, c(.5,.9,.99))
+      50%       90%       99% 
+0.0258260 0.0493322 0.3234707 
+> 
+> table(dtf$packet_size)   # ou la colonne length du CSV brut
+12000 
+ 2425 
+ 
+## pour 9 packets
+> summary(dtf$duree)          # attendu : mediane ~0.010 s
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.01561 0.01593 0.01622 0.02072 0.02056 1.72151 
+> quantile(dtf$duree, c(.5,.9,.99))
+       50%        90%        99% 
+0.01621500 0.03067280 0.04710176 
+> 
+> table(dtf$packet_size)   # ou la colonne length du CSV brut
+12000 
+ 7275
+
+# Graphes de délai
+
+```{r graph-delay-raw, fig.width=14, fig.height=6}
+delaya0a1 <- ggplot(a0_a1, aes(x = t_start, y = delay,
+                                color = attacked, shape = attacked)) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  scale_shape_manual(values = c("1" = 3, "0" = 4)) +
+  labs(x = "Timestamps (s)", y = "Delay (s)") +
+  ylim(c(0, max(a0_a1$delay))) + xlim(c(0, max(a0_a1$t_start))) +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_raw_", fig_suffix, ".png"), delaya0a1,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(delaya0a1)
+```
+
+```{r graph-delay-log, fig.width=14, fig.height=6}
+logdelaya0a1 <- ggplot(a0_a1, aes(x = t_start, y = log10(delay),
+                                   color = attacked, shape = attacked)) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  scale_shape_manual(values = c("1" = 3, "0" = 4)) +
+  labs(x = "Timestamps (s)", y = "Log10(Delay)") +
+  ylim(c(min(log10(a0_a1$delay[a0_a1$delay > 0])), max(log10(a0_a1$delay)))) +
+  xlim(c(0, max(a0_a1$t_start))) +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_log_", fig_suffix, ".png"), logdelaya0a1,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(logdelaya0a1)
+```
+
+```{r graph-delay-mix, fig.width=14, fig.height=5}
+delaymix <- ggplot(dtf, aes(x = t_start, y = fmean_delay, color = attacked)) +
+  geom_point(shape = 4, size = 0.5) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  ylim(c(0, max(a0_a1$delay))) + xlim(c(0, max(dtf$t_start))) +
+  labs(x = "Sending time (s)", y = "Mean Delay (s)") +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_mix_", fig_suffix, ".png"), delaymix,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(delaymix)
+```
+
+```{r graph-delay-train, fig.width=14, fig.height=5}
+delaytrain_sup <- ggplot(train_set_sup, aes(x = t_start, y = fmean_delay, color = attacked)) +
+  geom_point(shape = 4, size = 0.5) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  ylim(c(0, max(a0_a1$delay))) + xlim(c(0, max(test_set_sup$t_start))) +
+  labs(x = "Sending time (s)", y = "Mean Delay (s)") +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_trainsup_", fig_suffix, ".png"), delaytrain_sup,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(delaytrain_sup)
+
+delaytrain_unsup <- ggplot(train_set_unsup, aes(x = t_start, y = fmean_delay, color = attacked)) +
+  geom_point(shape = 4, size = 0.5) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  ylim(c(0, max(a0_a1$delay))) + xlim(c(0, max(test_set_unsup$t_start))) +
+  labs(x = "Sending time (s)", y = "Mean Delay (s)") +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_trainunsup_", fig_suffix, ".png"), delaytrain_unsup,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(delaytrain_unsup)
+```
+
+```{r graph-delay-test, fig.width=14, fig.height=5}
+delaytest_sup <- ggplot(test_set_sup, aes(x = t_start, y = fmean_delay, color = attacked)) +
+  geom_point(shape = 4, size = 0.5) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  ylim(c(0, max(a0_a1$delay))) + xlim(c(0, max(test_set_sup$t_start))) +
+  labs(x = "Sending time (s)", y = "Mean Delay (s)") +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_testsup_", fig_suffix, ".png"), delaytest_sup,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(delaytest_sup)
+
+delaytest_unsup <- ggplot(test_set_unsup, aes(x = t_start, y = fmean_delay, color = attacked)) +
+  geom_point(shape = 4, size = 0.5) +
+  scale_color_manual(values = c("1" = COL_DETOUR, "0" = COL_DIRECT)) +
+  ylim(c(0, max(a0_a1$delay))) + xlim(c(0, max(test_set_unsup$t_start))) +
+  labs(x = "Sending time (s)", y = "Mean Delay (s)") +
+  theme_ms(12) + theme(legend.position = "none")
+
+ggsave(paste0("delay_testunsup_", fig_suffix, ".png"), delaytest_unsup,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(delaytest_unsup)
+```
+
+```{r graph-delay-traintest, fig.width=14, fig.height=6}
+if ("fmean_delay" %in% names(test_set_sup) && "fmean_delay" %in% names(train_set_sup)) {
+  y_max <- max(c(test_set_sup$fmean_delay, train_set_sup$fmean_delay), na.rm = TRUE)
+  delaytraintest_sup <- ggplot() +
+    geom_point(data = test_set_sup, #[!is.na(group_num)],
+               aes(x = t_start, y = fmean_delay, color = attacked, shape = attacked),
+               size = 1, stroke = 0.8) +
+    geom_point(data = train_set_sup,
+               aes(x = t_start, y = fmean_delay, color = attacked, shape = attacked),
+               size = 1, stroke = 0.8) +
+    geom_vline(aes(xintercept = max(train_set_sup$t_start),
+                   linetype = "Set Separation"),
+               color = "black", linewidth = 1) +
+    geom_vline(aes(xintercept = min(test_set_sup$t_start),
+                   linetype = "Set Separation"),
+               color = "black", linewidth = 1) +
+    scale_color_manual(name = "Real Label",
+                       values = c("1" = COL_DETOUR, "0" = COL_DIRECT),
+                       labels = c("0" = "Direct", "1" = "Detour")) +
+    scale_shape_manual(name = "Real Label", values = c("1" = 3, "0" = 4),
+                       labels = c("0" = "Direct", "1" = "Detour")) +
+    scale_linetype_manual(name = "",
+                          values = c("Set Separation" = "solid")) +
+    ylim(c(0, y_max)) + xlim(c(0, max(test_set_sup$t_start))) +
+    labs(title = "Mean delay of a flow as a function of the sending time",
+         x = "Timestamp (s)", y = "Mean Delay (s)") +
+    theme_ms(8)
+  ggsave(paste0("delay_traintestsup_", fig_suffix, ".png"), delaytraintest_sup,
+         device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+  print(delaytraintest_sup)
+}
+
+
+if ("fmean_delay" %in% names(test_set_unsup) && "fmean_delay" %in% names(train_set_unsup)) {
+  y_max <- max(c(test_set_unsup$fmean_delay, train_set_unsup$fmean_delay), na.rm = TRUE)
+  delaytraintest_unsup <- ggplot() +
+    geom_point(data = test_set_unsup, #[!is.na(group_num)],
+               aes(x = t_start, y = fmean_delay, color = attacked, shape = attacked),
+               size = 1, stroke = 1) +
+    geom_point(data = train_set_unsup,
+               aes(x = t_start, y = fmean_delay, color = attacked, shape = attacked),
+               size = 1, stroke = 1) +
+    geom_vline(aes(xintercept = max(train_set_unsup$t_start),
+                   linetype = "Set Separation"),
+               color = "black", linewidth = 1) +
+    geom_vline(aes(xintercept = min(test_set_unsup$t_start),
+                   linetype = "Set Separation"),
+               color = "black", linewidth = 1) +
+    scale_color_manual(name = "Real Label",
+                       values = c("1" = COL_DETOUR, "0" = COL_DIRECT),
+                       labels = c("0" = "Direct", "1" = "Detour")) +
+    scale_shape_manual(name = "Real Label", values = c("1" = 3, "0" = 4),
+                       labels = c("0" = "Direct", "1" = "Detour")) +
+    scale_linetype_manual(name = "",
+                          values = c("Set Separation" = "solid")) +
+    ylim(c(0, y_max)) + xlim(c(0, max(test_set_unsup$t_start))) +
+    labs(title = "Mean delay of a flow as a function of the sending time",
+         x = "Timestamp (s)", y = "Mean Delay (s)") +
+    theme_ms(8)
+  ggsave(paste0("delay_traintestunsup_", fig_suffix, ".png"), delaytraintest_unsup,
+         device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+  print(delaytraintest_unsup)
+}
+```
+
+
+# Modèles
+
+> Pour chaque modèle :
+>
+> 1. Repartition dédiée (les paramètres `p_partition` et `unsupervised_partition`
+>    varient selon le modèle).
+> 2. Appel à `model$model_function(copy(tr), copy(te), current_param)` — toutes
+>    les features → **F1 réel** et `test_set` enrichi d'une colonne `prediction`.
+> 3. Figure manuscrit spécifique au type de modèle, sauvegardée dans
+>    `scratch/figure/`.
+
+```{r helpers, include=FALSE}
+# ---- Helper : repartitionner pour un modèle donné ----
+repartition_for <- function(m, cp) {
+  cp$model  <- m$name
+  local_dtf <- if (isTRUE((m$params)$is_timeserie)) copy(a0_a1) else copy(dtf)
+  k         <- setdiff(names(local_dtf), remove_detail)
+  c(tr, te) %<-% partition(
+    dtf          = local_dtf[, ..k],
+    unsupervised = (m$params)$unsupervised_partition,
+    p            = (m$params)$p_partition,
+    do_pca       = FALSE,
+    is_timeserie = (m$params)$is_timeserie,
+    current_param = cp
+  )
+  te <- te[rowSums(is.na(te)) <= ncol(te) / 2]
+  tr <- tr[rowSums(is.na(tr)) <= ncol(tr) / 2]
+  list(tr = tr, te = te, cp = cp)
+}
+
+# ---- Helper : grille 2D normalisée (t_start, fmean_delay) ----
+make_norm_grid <- function(tr, te, n = 100) {
+  lo <- rbindlist(list(tr#, te
+                       ))[, .(t_start, fmean_delay)][,
+         lapply(.SD, min, na.rm = TRUE)]
+  hi <- rbindlist(list(tr#, te
+                       ))[, .(t_start, fmean_delay)][,
+         lapply(.SD, max, na.rm = TRUE)]
+  norm2 <- function(x, col) normalize_me(x, lo[[col]], hi[[col]])
+  list(
+    lo = lo, hi = hi,
+    X_tr = {
+      tmp <- tr[, .(t_start, fmean_delay)][,
+               .(t_start   = norm2(t_start,    "t_start"),
+                 fmean_delay = norm2(fmean_delay, "fmean_delay"))]
+      tmp[, attacked := tr$attacked]
+      tmp[, source   := "Training set"]
+      tmp
+    },
+    X_te = te[, .(t_start, fmean_delay)][,
+               .(t_start   = norm2(t_start,    "t_start"),
+                 fmean_delay = norm2(fmean_delay, "fmean_delay"))],
+    grid = {
+      g <- expand.grid(t_start    = seq(0, 1.46, length.out = n),
+                       fmean_delay = seq(0, 1, length.out = n))
+      as.data.table(g)
+    }
+  )
+}
+
+
+# te_XXX[, outcome := fcase(
+#   attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+#   attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+#   attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+#   attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+# )]
+
+# Palettes communes pour les 3 graphes
+# COL_OUTCOME_TP <- COL_DETOUR        # orange-rouge
+# COL_OUTCOME_TN <- COL_DIRECT        # bleu
+# COL_OUTCOME_FP <- "#E69F00"         # orange  — fausse alarme
+# COL_OUTCOME_FN <- "#CC79A7"         # violet  — détour manqué
+
+outcome_colors <- c(
+  "Direct (Train)"       = COL_TRAIN,
+  "Detour (Train)"       = COL_TRAIN,
+  "TP (Detour \u2192 Detour)" = COL_DETOUR,
+  "TN (Direct \u2192 Direct)" = COL_DIRECT,
+  "FP (Direct \u2192 Detour)" = COL_FP, #"#E69F00",
+  "FN (Detour \u2192 Direct)" = COL_FN #"#CC79A7"
+)
+
+outcome_shapes <- c(
+  "Direct (Train)"       = 4,   # x  — direct
+  "Detour (Train)"       = 3,   # +  — detour
+  "TP (Detour \u2192 Detour)" = 3,
+  "TN (Direct \u2192 Direct)" = 4,
+  "FP (Direct \u2192 Detour)" = 4,   # vraie forme = Direct
+  "FN (Detour \u2192 Direct)" = 3    # vraie forme = Detour
+)
+```
+
+## Modèle 1 — Interval Delay
+
+```{r model-interval-delay, fig.width=14, fig.height=8}
+m_int <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_interval_delay)))]]
+
+r_int           <- repartition_for(m_int, current_param)
+current_param$model <- m_int$name
+
+# Exécution (toutes les features)
+c(score_int, te_int) %<-% do_interval_delay(
+  copy(r_int$tr), copy(r_int$te), r_int$cp)
+cat("[INFO] interval_delay F1:", round(score_int$F1_score, 4), "\n")
+tr_int <- copy(r_int$tr)
+tr_int$source = "train"
+
+# Recalcul de l'intervalle depuis le train sain
+var_int <- if ("fmean_delay" %in% names(r_int$tr)) "fmean_delay" else "delay"
+q_inf   <- quantile(r_int$tr[attacked == 0][[var_int]], 0.10, na.rm = TRUE)
+q_sup   <- quantile(r_int$tr[attacked == 0][[var_int]], 0.90, na.rm = TRUE)
+
+# Créer un data.frame décrivant les 3 zones
+zones <- data.frame(
+  ymin   = c(-Inf,  q_inf, q_sup),
+  ymax   = c(q_inf, q_sup, Inf),
+  region = c("Detour region", "Direct region", "Detour region")
+)
+
+g_int <- ggplot() +
+  # annotate("rect", xmin = -Inf, xmax = Inf, ymin = q_inf, ymax = q_sup,
+  #          fill = COL_DIRECT, alpha = 0.10) +
+  # annotate("rect", xmin = -Inf, xmax = Inf, ymin = q_sup, ymax = Inf,
+  #          fill = COL_DETOUR, alpha = 0.10) +
+  # annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = q_inf,
+  #          fill = COL_DETOUR, alpha = 0.10) +
+  geom_rect(data = zones,
+            aes(xmin = -Inf, xmax = Inf,
+                ymin = ymin,  ymax = ymax,
+                fill = region),
+            alpha = 0.20, inherit.aes = FALSE) +
+  
+  geom_point(data = te_int,
+             aes_string(x = "t_start", y = var_int,
+                        color = "attacked", shape = "attacked"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_point(data = tr_int,
+             aes_string(x = "t_start", y = var_int,
+                        color = "source", shape = "source"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_hline(yintercept = q_inf, linetype = "dashed",
+             color = "black", linewidth = 0.7) +
+  geom_hline(yintercept = q_sup, linetype = "dashed",
+             color = "black", linewidth = 0.7) +
+  scale_color_manual(name = "Real Label",
+                     values = c("1" = COL_DETOUR, "0" = COL_DIRECT, "train" = "black"),
+                     labels = c("0" = "Direct", "1" = "Detour", "train" = "Training set")) +
+  scale_shape_manual(name = "Real Label",
+                     values = c("1" = 3, "0" = 4, "train" = 4),
+                     labels = c( "1" = "Detour", "0" = "Direct","train" = "Training set")) +
+  scale_fill_manual(name = "Decision Region",
+                    values = c("Direct region"   = COL_DIRECT,
+                               "Detour region" = COL_DETOUR),
+                    labels = c("Direct region"   = "Direct region",
+                               "Detour region" = "Detour region")) +
+  labs(title = paste0("Interval Model Decision [Q10, Q90]",
+                      "\nF1-score: ", round(score_int$F1_score, 4)),
+       x = "Sending time (s)", y = "Mean Delay of flow (s)") +
+  ylim(c(0, max(a0_a1$delay))) +
+  xlim(c(0, max(a0_a1$t_start))) +
+  theme_ms(8)
+
+ggsave(paste0("model_interval_delay_", fig_suffix, ".png"), g_int,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_int)
+```
+
+```{r}
+m_int <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_interval_delay)))]]
+r_int               <- repartition_for(m_int, current_param)
+current_param$model <- m_int$name
+
+c(score_int, te_int) %<-% do_interval_delay(
+  copy(r_int$tr), copy(r_int$te), r_int$cp)
+cat("[INFO] interval_delay F1:", round(score_int$F1_score, 4), "\n")
+
+tr_int         <- copy(r_int$tr)
+tr_int[attacked == 0, source := "Direct (Train)"]
+tr_int[attacked == 1, source := "Detour (Train)"]
+
+var_int <- if ("fmean_delay" %in% names(r_int$tr)) "fmean_delay" else "delay"
+q_inf   <- quantile(r_int$tr[attacked == 0][[var_int]], 0.10, na.rm = TRUE)
+q_sup   <- quantile(r_int$tr[attacked == 0][[var_int]], 0.90, na.rm = TRUE)
+
+# Outcome TP/TN/FP/FN
+te_int[, outcome := fcase(
+  attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+)]
+
+zones <- data.frame(
+  ymin   = c(-Inf,  q_inf, q_sup),
+  ymax   = c(q_inf, q_sup, Inf),
+  region = c("Detour region", "Direct region", "Detour region")
+)
+
+g_int <- ggplot() +
+  geom_rect(data = zones,
+            aes(xmin = -Inf, xmax = Inf,
+                ymin = ymin,  ymax = ymax,
+                fill = region),
+            alpha = 0.20, inherit.aes = FALSE) +
+  geom_point(data = tr_int,
+             aes_string(x = "t_start", y = var_int,
+                        color = "source", shape = "source"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_point(data = te_int,
+             aes_string(x = "t_start", y = var_int,
+                        color = "outcome", shape = "outcome"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_hline(yintercept = q_inf, linetype = "dashed",
+             color = "black", linewidth = 0.7) +
+  geom_hline(yintercept = q_sup, linetype = "dashed",
+             color = "black", linewidth = 0.7) +
+  scale_color_manual(name   = "Label & Outcome",
+                     values = outcome_colors) +
+  scale_shape_manual(name   = "Label & Outcome",
+                     values = outcome_shapes) +
+  scale_fill_manual(name   = "Decision region",
+                    values = c("Direct region" = COL_DIRECT,
+                               "Detour region" = COL_DETOUR)) +
+  labs(title = paste0("Interval Model Decision [Q10, Q90]",
+                      "\nF1-score: ", round(score_int$F1_score, 4)),
+       x = "Sending time (s)", y = "Mean Delay of flow (s)") +
+  ylim(c(0, max(a0_a1$delay))) +
+  xlim(c(0, max(a0_a1$t_start))) +
+  guides(
+    color = guide_legend(order = 1),
+    shape = guide_legend(order = 1),
+    fill  = guide_legend(order = 2)
+  ) +
+  theme_ms(8)
+
+ggsave(paste0("model_interval_delay_", fig_suffix, ".png"), g_int,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_int)
+```
+
+
+## Modèle 2 — Threshold
+
+```{r model-threshold, fig.width=14, fig.height=8}
+m_thr <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_threshold)))]]
+
+r_thr           <- repartition_for(m_thr, current_param)
+current_param$model <- m_thr$name
+
+c(score_thr, te_thr) %<-% do_threshold(
+  copy(r_thr$tr), copy(r_thr$te), r_thr$cp)
+cat("[INFO] threshold F1:", round(score_thr$F1_score, 4), "\n")
+tr_thr <- copy(r_thr$tr)
+tr_thr$source = "train"
+
+var_thr   <- if ("fmean_delay" %in% names(r_thr$tr)) "fmean_delay" else "delay"
+threshold <- quantile(r_thr$tr[attacked == 0][[var_thr]], 0.95, na.rm = TRUE)
+
+zones <- data.frame(
+  ymin   = c(-Inf,  threshold),
+  ymax   = c(threshold, Inf),
+  region = c("Direct region", "Detour region")
+)
+
+g_thr <- ggplot() +
+  # annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = threshold,
+  #          fill = COL_DIRECT, alpha = 0.10) +
+  # annotate("rect", xmin = -Inf, xmax = Inf, ymin = threshold, ymax = Inf,
+  #          fill = COL_DETOUR, alpha = 0.10) +
+  geom_rect(data = zones,
+            aes(xmin = -Inf, xmax = Inf,
+                ymin = ymin,  ymax = ymax,
+                fill = region),
+            alpha = 0.20, inherit.aes = FALSE) +
+  
+  geom_point(data = te_thr,
+             aes_string(x = "t_start", y = var_thr,
+                        color = "attacked", shape = "attacked"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_point(data = tr_thr,
+             aes_string(x = "t_start", y = var_thr,
+                        color = "source", shape = "source"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_hline(yintercept = threshold, linetype = "dashed",
+             color = "black", linewidth = 0.7) +
+  annotate("text",
+           x = max(te_thr$t_start, na.rm = TRUE) * 0.01,
+           y = threshold * 1.26, hjust = 0,
+           label = paste0("Threshold Q95 = ", round(threshold, 5)),
+           size = 3, color = "black", stroke = 1) +
+  scale_color_manual(name = "Real Label",
+                     values = c("1" = COL_DETOUR, "0" = COL_DIRECT, "train" = "black"),
+                     labels = c("0" = "Direct", "1" = "Detour", "train" = "Training set")) +
+  scale_shape_manual(name = "Real Label",
+                     values = c("1" = 3, "0" = 4, "train" = 4),
+                     labels = c("0" = "Direct", "1" = "Detour", "train" = "Training set")) +
+  scale_fill_manual(name = "Decision Region",
+                    values = c("Direct region"   = COL_DIRECT,
+                               "Detour region" = COL_DETOUR),
+                    labels = c("Direct region"   = "Direct region",
+                               "Detour region" = "Detour region")) +
+  labs(title = paste0("Threshold Model Decision (Q95)",
+                      "\nF1-score: ", round(score_thr$F1_score, 4)),
+       x = "Sending time (s)", y = "Mean Delay of flow (s)") +
+  ylim(c(0, max(a0_a1$delay))) +
+  theme_ms(8)
+
+ggsave(paste0("model_threshold_", fig_suffix, ".png"), g_thr,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_thr)
+```
+
+```{r}
+
+m_thr <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_threshold)))]]
+r_thr               <- repartition_for(m_thr, current_param)
+current_param$model <- m_thr$name
+
+c(score_thr, te_thr) %<-% do_threshold(
+  copy(r_thr$tr), copy(r_thr$te), r_thr$cp)
+cat("[INFO] threshold F1:", round(score_thr$F1_score, 4), "\n")
+
+tr_thr         <- copy(r_thr$tr)
+tr_thr[attacked == 0, source := "Direct (Train)"]
+tr_thr[attacked == 1, source := "Detour (Train)"]
+
+var_thr   <- if ("fmean_delay" %in% names(r_thr$tr)) "fmean_delay" else "delay"
+threshold <- quantile(r_thr$tr[attacked == 0][[var_thr]], 0.95, na.rm = TRUE)
+
+# Outcome TP/TN/FP/FN
+te_thr[, outcome := fcase(
+  attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+)]
+
+zones <- data.frame(
+  ymin   = c(-Inf,     threshold),
+  ymax   = c(threshold, Inf),
+  region = c("Direct region", "Detour region")
+)
+
+g_thr <- ggplot() +
+  geom_rect(data = zones,
+            aes(xmin = -Inf, xmax = Inf,
+                ymin = ymin,  ymax = ymax,
+                fill = region),
+            alpha = 0.20, inherit.aes = FALSE) +
+  geom_point(data = tr_thr,
+             aes_string(x = "t_start", y = var_thr,
+                        color = "source", shape = "source"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_point(data = te_thr,
+             aes_string(x = "t_start", y = var_thr,
+                        color = "outcome", shape = "outcome"),
+             size = 1, stroke = 1, alpha = 0.85) +
+  geom_hline(yintercept = threshold, linetype = "dashed",
+             color = "black", linewidth = 0.7) +
+  annotate("text",
+           x     = max(te_thr$t_start, na.rm = TRUE) * 0.01,
+           y     = threshold * 1.26, hjust = 0,
+           label = paste0("Threshold Q95 = ", round(threshold, 5)),
+           size  = 3, color = "black") +
+  scale_color_manual(name   = "Label & Outcome",
+                     values = outcome_colors) +
+  scale_shape_manual(name   = "Label & Outcome",
+                     values = outcome_shapes) +
+  scale_fill_manual(name   = "Decision region",
+                    values = c("Direct region" = COL_DIRECT,
+                               "Detour region" = COL_DETOUR)) +
+  labs(title = paste0("Threshold Model Decision (Q95)",
+                      "\nF1-score: ", round(score_thr$F1_score, 4)),
+       x = "Sending time (s)", y = "Mean Delay of flow (s)") +
+  ylim(c(0, max(a0_a1$delay))) +
+  guides(
+    color = guide_legend(order = 1),
+    shape = guide_legend(order = 1),
+    fill  = guide_legend(order = 2)
+  ) +
+  theme_ms(8)
+
+ggsave(paste0("model_threshold_", fig_suffix, ".png"), g_thr,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_thr)
+
+
+```
+
+
+## Modèle 3 — SVM
+
+```{r model-svm, fig.width=14, fig.height=10}
+m_svm <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_svm)))]]
+
+r_svm           <- repartition_for(m_svm, current_param)
+current_param$model <- m_svm$name
+
+# Modèle complet (toutes les features) → F1 réel
+c(score_svm, te_svm) %<-% do_svm(copy(r_svm$tr), copy(r_svm$te), r_svm$cp)
+cat("[INFO] SVM F1 (full) :", round(score_svm$F1_score, 4), "\n")
+
+# Figure 2D : SVM re-entraîné sur (t_start, fmean_delay) normalisés
+nd   <- make_norm_grid(r_svm$tr, r_svm$te)
+cnt  <- table(nd$X_tr$attacked)
+w0   <- 1 / (2 * (cnt["0"] / sum(cnt)))
+w1   <- 1 / (2 * (cnt["1"] / sum(cnt)))
+
+clf2d <- svm(attacked ~ ., data = nd$X_tr[, .(t_start, fmean_delay, attacked)],
+             cost = 100, type = "C-classification", kernel = "radial",
+             scale = FALSE,
+             class.weights = list("0" = w0, "1" = w1),
+             na.action = na.exclude)
+
+nd$grid$decision <- factor(predict(clf2d, nd$grid),
+                           levels = levels(nd$X_tr$attacked))
+
+y2d <- factor(predict(clf2d, nd$X_te, na.action = na.exclude),
+              levels = levels(te_svm$attacked))
+nd$X_te[, attacked   := te_svm$attacked]
+nd$X_te[, prediction := y2d]
+
+c(score_svm2d, .) %<-% commun_info(
+  copy(te_svm), y2d,
+  paste0("scratch/ninth/model/svm2d_", fig_suffix))
+cat("[INFO] SVM F1 (2D)   :", round(score_svm2d$F1_score, 4), "\n")
+nd$X_tr[attacked == 0, source := "Direct (Train)"]
+nd$X_tr[attacked == 1, source := "Detour (Train)"]
+
+g_svm <- ggplot() +
+  geom_point(data = nd$grid,
+             aes(x = t_start, y = fmean_delay, fill = decision, shape = "Decision Region"),
+             shape = 22, alpha = 0.1, stroke = 0, size = 2,
+             show.legend = c(shape = F)) +
+  geom_point(data = nd$X_tr,
+             aes(x = t_start, y = fmean_delay,
+                 color = source, shape = source),
+             size = 1, alpha = 1#0.6
+             , stroke = 1) +
+  geom_point(data = nd$X_te,
+             aes(x = t_start, y = fmean_delay,
+                 color = attacked, shape = attacked),
+             size = 1, stroke = 1, alpha = 1,
+             show.legend = c(shape = T, color = F)) +
+  scale_color_manual(name = "Real Label",
+                     values = c("Direct (Train)" = COL_TRAIN, "Detour (Train)" = COL_TRAIN,
+                                "1" = COL_DETOUR, "0" = COL_DIRECT),
+                     labels = c("Direct (Test)", "Detour (Test)", "Detour (Train)", "Direct (Train)")) +
+  scale_shape_manual(name = "Real Label",
+                     values = c( "Detour (Train)" =  3, "1" = 3, "0" = 4,"Direct (Train)" = 4),
+                     labels = c("Direct (Test)", "Detour (Test)", "Detour (Train)", "Direct (Train)")) +
+  scale_fill_manual(name = "Decision Region",values = c("0" = COL_DIRECT,"1" = COL_DETOUR),
+                    labels = c("Direct region", "Detour region")) +
+  labs(title = paste0("SVM Decision Boundary (2D)\n",
+                      "F1-score (2D): ", round(score_svm2d$F1_score, 4),
+                      "  |  F1-score (full): ", round(score_svm$F1_score, 4)),
+       x = "Scaled Timestamp", y = "Scaled Mean Delay") +
+  theme_ms(8)+
+  guides(
+    shape = guide_legend(order = 1),
+    color = guide_legend(order = 1),
+    fill  = guide_legend(order = 2)
+  ) 
+
+ggsave(paste0("model_svm_", fig_suffix, ".png"), g_svm,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_svm)
+rm(clf2d)
+```
+
+```{r}
+
+m_svm <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_svm)))]]
+r_svm               <- repartition_for(m_svm, current_param)
+current_param$model <- m_svm$name
+
+c(score_svm, te_svm) %<-% do_svm(copy(r_svm$tr), copy(r_svm$te), r_svm$cp)
+cat("[INFO] SVM F1 (full) :", round(score_svm$F1_score, 4), "\n")
+
+nd  <- make_norm_grid(r_svm$tr, r_svm$te)
+cnt <- table(nd$X_tr$attacked)
+w0  <- 1 / (2 * (cnt["0"] / sum(cnt)))
+w1  <- 1 / (2 * (cnt["1"] / sum(cnt)))
+
+clf2d <- svm(attacked ~ ., data = nd$X_tr[, .(t_start, fmean_delay, attacked)],
+             cost = 100, type = "C-classification", kernel = "radial",
+             scale = FALSE,
+             class.weights = list("0" = w0, "1" = w1),
+             na.action = na.exclude)
+
+nd$grid$decision <- factor(predict(clf2d, nd$grid),
+                           levels = levels(nd$X_tr$attacked))
+
+y2d <- factor(predict(clf2d, nd$X_te, na.action = na.exclude),
+              levels = levels(te_svm$attacked))
+nd$X_te[, attacked   := te_svm$attacked]
+nd$X_te[, prediction := y2d]
+
+c(score_svm2d, .) %<-% commun_info(
+  copy(te_svm), y2d,
+  paste0("scratch/ninth/model/svm2d_", fig_suffix))
+cat("[INFO] SVM F1 (2D)   :", round(score_svm2d$F1_score, 4), "\n")
+
+nd$X_tr[attacked == 0, source := "Direct (Train)"]
+nd$X_tr[attacked == 1, source := "Detour (Train)"]
+
+# Outcome TP/TN/FP/FN (sur les coordonnées normalisées du test set)
+nd$X_te[, outcome := fcase(
+  attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+)]
+
+g_svm <- ggplot() +
+  geom_point(data = nd$grid,
+             aes(x = t_start, y = fmean_delay, fill = decision),
+             shape = 22, alpha = 0.10, stroke = 0, size = 2, 
+             show.legend = c(fill = TRUE)) +
+  geom_point(data = nd$X_tr,
+             aes(x = t_start, y = fmean_delay,
+                 color = source, shape = source),
+             size = 1, stroke = 1, alpha = 1) +
+  geom_point(data = nd$X_te,
+             aes(x = t_start, y = fmean_delay,
+                 color = outcome, shape = outcome),
+             size = 1, stroke = 1, alpha = 1) +
+  scale_color_manual(name   = "Label & Outcome",
+                     values = outcome_colors) +
+  scale_shape_manual(name   = "Label & Outcome",
+                     values = outcome_shapes) +
+  scale_fill_manual(name   = "Decision Region",
+                    values = c("0" = COL_DIRECT, "1" = COL_DETOUR),
+                    labels = c("1" = "Detour region", "0" = "Direct region")) +
+  labs(title = paste0("SVM Decision Boundary (2D)\n",
+                      "F1-score (2D): ", round(score_svm2d$F1_score, 4),
+                      "  |  F1-score (full): ", round(score_svm$F1_score, 4)),
+       x = "Scaled Timestamp", y = "Scaled Mean Delay") +
+  guides(
+    color = guide_legend(order = 1),
+    shape = guide_legend(order = 1),
+    fill  = guide_legend(order = 2,
+                       override.aes = list(size  = 8,
+                                           alpha = 0.3,
+                                           shape = 22))
+  ) +
+  theme_ms(8)
+
+ggsave(paste0("model_svm_", fig_suffix, ".png"), g_svm,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_svm)
+rm(clf2d)
+
+```
+
+
+
+## Modèle 4 — Régression Logistique
+"Logistic regression was fitted using L1-penalized maximum likelihood estimation (LASSO) to address multicollinearity among the feature set. The regularization parameter λ was selected by 5-fold cross-validation (lambda.1se criterion)."
+
+"For configurations where multicollinearity was detected (VIF > 10), LASSO regularization was applied."
+
+
+<!-- ```{r model-reglog, fig.width=14, fig.height=10} -->
+<!-- m_rl <- models[[which(sapply(models, function(m) -->
+<!--   identical(m$model_function, do_reg_log)))]] -->
+
+<!-- r_rl            <- repartition_for(m_rl, current_param) -->
+<!-- current_param$model <- m_rl$name -->
+
+<!-- c(score_rl, te_rl) %<-% do_reg_log(copy(r_rl$tr), copy(r_rl$te), r_rl$cp) -->
+<!-- cat("[INFO] RegLog F1 (full) :", round(score_rl$F1_score, 4), "\n") -->
+
+<!-- # Figure 2D : GLM sur (t_start, fmean_delay) → contour à probabilité = 0.5 -->
+<!-- mod_rl2d <- glm( -->
+<!--   attacked ~ t_start + fmean_delay, -->
+<!--   data      = r_rl$tr[, .(attacked, t_start, fmean_delay)], -->
+<!--   family    = binomial(link = "logit"), -->
+<!--   na.action = na.exclude -->
+<!-- ) -->
+
+<!-- x_rng <- seq(min(r_rl$tr$t_start,    na.rm = TRUE), -->
+<!--              max(r_rl$te$t_start,    na.rm = TRUE), length.out = 100) -->
+<!-- y_rng <- seq(min(r_rl$tr$fmean_delay, na.rm = TRUE), -->
+<!--              max(r_rl$tr$fmean_delay, na.rm = TRUE), length.out = 100) -->
+<!-- grid_rl       <- as.data.table(expand.grid(t_start = x_rng, fmean_delay = y_rng)) -->
+<!-- grid_rl$prob  <- predict(mod_rl2d, newdata = grid_rl, type = "response") -->
+
+<!-- prob2d   <- predict(mod_rl2d, -->
+<!--                     newdata   = r_rl$te[, .(t_start, fmean_delay)], -->
+<!--                     type      = "response", na.action = na.pass) -->
+<!-- pred2d   <- factor(ifelse(prob2d > 0.5, 1, 0), levels = levels(r_rl$te$attacked)) -->
+<!-- c(score_rl2d, .) %<-% commun_info( -->
+<!--   copy(r_rl$te), pred2d, -->
+<!--   paste0("scratch/ninth/model/reglog2d_", fig_suffix)) -->
+<!-- cat("[INFO] RegLog F1 (2D)   :", round(score_rl2d$F1_score, 4), "\n") -->
+
+<!-- r_rl$tr[attacked == 0, source := "Direct (Train)"] -->
+<!-- r_rl$tr[attacked == 1, source := "Detour (Train)"] -->
+
+<!-- te_rl[, prediction := pred2d] -->
+
+<!-- g_rl <- ggplot() + -->
+<!--   geom_tile(data = grid_rl, -->
+<!--             aes(x = t_start, y = fmean_delay, fill = prob), alpha = 0.25) + -->
+<!--   scale_fill_gradient2(name = "Decision\nProbability\n(detour)", -->
+<!--                        low = COL_DIRECT, mid = "white", -->
+<!--                        high = COL_DETOUR, midpoint = 0.5) + -->
+<!--   geom_contour(data = grid_rl, -->
+<!--                aes(x = t_start, y = fmean_delay, z = prob), -->
+<!--                breaks = 0.5, color = "black", linewidth = 0.7, linetype = "dashed") + -->
+<!--   geom_point(data = r_rl$tr, -->
+<!--              aes(x = t_start, y = fmean_delay, color = source, shape = source), -->
+<!--               size = 1, alpha = 1) + -->
+<!--   geom_point(data = te_rl, -->
+<!--              aes(x = t_start, y = fmean_delay, -->
+<!--                  color = attacked, shape = attacked), -->
+<!--              size = 1, stroke = 1) + -->
+<!--   scale_color_manual(name = "Real Label", -->
+<!--                      values = c("Direct (Train)" = COL_TRAIN, "Detour (Train)" = COL_TRAIN,"1" = COL_DETOUR, "0" = COL_DIRECT), -->
+<!--                      labels = c("0" = "Direct (Test)", "1" = "Detour (Test)", "Detour (Train)" ="Detour (Train)", "Direct (Train)"="Direct (Train)")) + -->
+<!--   scale_shape_manual(name = "Real Label", # prediction -->
+<!--                      values = c("Detour (Train)" =  3,"1" = 3, "0" = 4,"Direct (Train)" = 4), -->
+<!--                      labels = c("0" = "Direct (Test)", "1" = "Detour (Test)", "Detour (Train)" ="Detour (Train)", "Direct (Train)"="Direct (Train)")) + -->
+<!--   labs(title = paste0("Logistic Regression Decision Boundary (2D)\n", -->
+<!--                       "F1-score (2D): ", round(score_rl2d$F1_score, 4), -->
+<!--                       "  |  F1-score (full): ", round(score_rl$F1_score, 4)), -->
+<!--        x = "Sending time (s)", y = "Mean Delay (s)") + -->
+<!--   theme_ms(8)+ -->
+<!--   guides( -->
+<!--     shape = guide_legend(order = 1), -->
+<!--     color = guide_legend(order = 1), -->
+<!--     fill  = guide_colorbar(order = 2) -->
+<!--   )  -->
+
+<!-- ggsave(paste0("model_reglog_", fig_suffix, ".png"), g_rl, -->
+<!--        device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px") -->
+<!-- print(g_rl) -->
+<!-- rm(mod_rl2d) -->
+<!-- ``` -->
+
+
+```{r}
+m_rl <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_reg_log)))]]
+
+r_rl            <- repartition_for(m_rl, current_param)
+current_param$model <- m_rl$name
+
+c(score_rl, te_rl) %<-% do_reg_log(copy(r_rl$tr), copy(r_rl$te), r_rl$cp)
+cat("[INFO] RegLog F1 (full) :", round(score_rl$F1_score, 4), "\n")
+
+# Figure 2D : GLM sur (t_start, fmean_delay) → contour à probabilité = 0.5
+mod_rl2d <- glm(
+  attacked ~ t_start + fmean_delay,
+  data      = r_rl$tr[, .(attacked, t_start, fmean_delay)],
+  family    = binomial(link = "logit"),
+  na.action = na.exclude
+)
+
+x_rng <- seq(min(r_rl$tr$t_start,    na.rm = TRUE),
+             max(r_rl$te$t_start,    na.rm = TRUE), length.out = 100)
+y_rng <- seq(min(r_rl$tr$fmean_delay, na.rm = TRUE),
+             max(r_rl$tr$fmean_delay, na.rm = TRUE), length.out = 100)
+grid_rl       <- as.data.table(expand.grid(t_start = x_rng, fmean_delay = y_rng))
+grid_rl$prob  <- predict(mod_rl2d, newdata = grid_rl, type = "response")
+
+prob2d   <- predict(mod_rl2d,
+                    newdata   = r_rl$te[, .(t_start, fmean_delay)],
+                    type      = "response", na.action = na.pass)
+pred2d   <- factor(ifelse(prob2d > 0.5, 1, 0), levels = levels(r_rl$te$attacked))
+c(score_rl2d, .) %<-% commun_info(
+  copy(r_rl$te), pred2d,
+  paste0("scratch/ninth/model/reglog2d_", fig_suffix))
+cat("[INFO] RegLog F1 (2D)   :", round(score_rl2d$F1_score, 4), "\n")
+
+r_rl$tr[attacked == 0, source := "Direct (Train)"]
+r_rl$tr[attacked == 1, source := "Detour (Train)"]
+
+te_rl[, prediction := pred2d]
+
+# Calcul de l'outcome TP/TN/FP/FN sur le test set
+te_rl[, outcome := fcase(
+  attacked == 1 & prediction == 1, "TP (Detour  → Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct  → Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct  → Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour  → Direct)"
+)]
+
+g_rl <- ggplot() +
+  geom_tile(data = grid_rl,
+            aes(x = t_start, y = fmean_delay, fill = prob),
+            alpha = 0.25) +
+  scale_fill_gradient2(name = "Decision Probability\n(detour)",
+                       low = COL_DIRECT, mid = "white",
+                       high = COL_DETOUR, midpoint = 0.5) +
+  geom_contour(data = grid_rl,
+               aes(x = t_start, y = fmean_delay, z = prob),
+               breaks = 0.5, color = "black",
+               linewidth = 0.7, linetype = "dashed") +
+  # Train set
+  geom_point(data = r_rl$tr,
+             aes(x = t_start, y = fmean_delay,
+                 color = source, shape = source),
+             size = 1, alpha = 0.6) +
+  # Test set coloré par outcome
+  geom_point(data = te_rl,
+             aes(x = t_start, y = fmean_delay,
+                 color = outcome, shape = outcome),
+             size = 1, stroke = 1, alpha = 1) +
+  scale_color_manual(
+    name   = "Label & Outcome",
+    values = c(
+      "Direct (Train)"       = COL_TRAIN,
+      "Detour (Train)"       = COL_TRAIN,
+      "TP (Detour  → Detour)" = COL_DETOUR,
+      "TN (Direct  → Direct)" = COL_DIRECT,
+      "FP (Direct  → Detour)" = COL_FP,   # orange — fausse alarme
+      "FN (Detour  → Direct)" = COL_FN #"#CC79A7"    # violet — détour manqué
+    ),
+    labels = c(
+      "Direct (Train)"       = "Direct (Train)",
+      "Detour (Train)"       = "Detour (Train)",
+      "TP (Detour  → Detour)" = "TP (Detour  → Detour)",
+      "TN (Direct  → Direct)" = "TN (Direct  → Direct)",
+      "FP (Direct  → Detour)" = "FP (Direct  → Detour)",   # orange — fausse alarme
+      "FN (Detour  → Direct)" = "FN (Detour  → Direct)"    # violet — détour manqué
+    )
+  ) +
+  scale_shape_manual(
+    name   = "Label & Outcome",
+    values = c(
+      "Direct (Train)"       = 4,
+      "Detour (Train)"       = 3,
+      "TP (Detour  → Detour)" = 3,
+      "TN (Direct  → Direct)" = 4,
+      "FP (Direct  → Detour)" = 4,   # vraie forme = Direct
+      "FN (Detour  → Direct)" = 3    # vraie forme = Detour
+    ),
+    labels = c(
+      "Direct (Train)"       = "Direct (Train)",
+      "Detour (Train)"       = "Detour (Train)",
+      "TP (Detour  → Detour)" = "TP (Detour  → Detour)",
+      "TN (Direct  → Direct)" = "TN (Direct  → Direct)",
+      "FP (Direct  → Detour)" = "FP (Direct  → Detour)",   # orange — fausse alarme
+      "FN (Detour  → Direct)" = "FN (Detour  → Direct)"    # violet — détour manqué
+    )
+  ) +
+  labs(
+    title = paste0(
+      "Logistic Regression Decision Boundary (2D)\n",
+      "F1-score (2D): ", round(score_rl2d$F1_score, 4),
+      "  |  F1-score (full): ", round(score_rl$F1_score, 4)
+    ),
+    x = "Sending time (s)", y = "Mean Delay (s)"
+  ) +
+  guides(
+    color = guide_legend(order = 1),
+    shape = guide_legend(order = 1),
+    fill  = guide_colorbar(order = 2)
+  ) +
+  theme_ms(8)
+ggsave(paste0("model_reglog_outcome_", fig_suffix, ".png"), g_rl,
+       device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px")
+print(g_rl)
+
+```
+
+
+### Coefficient importante
+```{r}
+# ---- Ré-entraînement du modèle complet pour les coefficients ----
+# (do_reg_log() ne retourne pas l'objet modèle)
+reglog_features <- c(
+  "fmedian_delay","fmad_delay","fIQR_delay","fCV_delay",
+  "fQ095_delay","fQ095_Q005","fmeanTRIM10_delay",
+  "fMASD_delay","fRMSJ_delay","fsd_diff_delay",
+  "fIPDV_neg_delay","fIPDV_pos_delay",
+  "facf_lag0","facf_lag1","facf_lag2","facf_lag3","facf_lag4",
+  "facf_lag5","facf_lag6","facf_lag7","facf_lag8","facf_lag9","facf_lag10",
+  "fACF_sum","fslope_t","fCUSUM_max","fearly_diff",
+  "alpha_hat","beta_hat","r2","sigma_eps",
+  "rho_tilde","lambda_hat",
+  "fkurtosis_delay","fskew_delay","fhill",
+  "delay","flow_size",
+  "d_alpha","d_masd","d_cv","d_beta"
+)
+
+tr_coef <- copy(r_rl$tr)
+
+# Même preprocessing que do_reg_log()
+alpha_base  <- tr_coef[attacked == 0, median(alpha_hat,   na.rm = TRUE)]
+jitter_base <- tr_coef[attacked == 0, median(fMASD_delay, na.rm = TRUE)]
+cv_base     <- tr_coef[attacked == 0, median(fCV_delay,   na.rm = TRUE)]
+beta_base   <- tr_coef[attacked == 0, median(beta_hat,    na.rm = TRUE)]
+tr_coef[, d_alpha := alpha_hat   - alpha_base]
+tr_coef[, d_masd  := fMASD_delay - jitter_base]
+tr_coef[, d_cv    := fCV_delay   - cv_base]
+tr_coef[, d_beta  := beta_hat    - beta_base]
+
+skew_cols <- intersect(c("fCUSUM_max","fhill","rho_tilde","lambda_hat",
+                          "fQ095_delay","fQ095_Q005"), names(tr_coef))
+for (nm in skew_cols) tr_coef[[nm]] <- log1p(pmax(tr_coef[[nm]], 0))
+
+keep_coef <- colnames(tr_coef)[colnames(tr_coef) %in% reglog_features]
+keep_coef <- keep_coef[!sapply(tr_coef[, ..keep_coef],
+                               function(x) length(unique(x)) <= 1)]
+
+counts_c     <- table(tr_coef$attacked)
+obs_weights  <- ifelse(tr_coef$attacked == "0",
+                       1 / (2 * (counts_c["0"] / sum(counts_c))),
+                       1 / (2 * (counts_c["1"] / sum(counts_c))))
+
+
+
+mod_rl_full <- glm(
+  attacked ~ .,
+  data      = tr_coef[, c("attacked", ..keep_coef), with = FALSE],
+  weights   = obs_weights,
+  family    = binomial(link = "logit"),
+  control   = glm.control(maxit = 1000, epsilon = 1e-8),
+  na.action = na.exclude
+)
+
+# ---- Tableau des coefficients ----
+top_n <- 20   # nombre de coefficients à afficher
+
+coef_dt <- as.data.table(coef(summary(mod_rl_full)), keep.rownames = "term")
+setnames(coef_dt, c("term", "estimate", "std.error", "z.value", "p.value"))
+
+coef_dt[, `:=`(
+  conf.low   = estimate - 1.96 * std.error,
+  conf.high  = estimate + 1.96 * std.error,
+  abs_effect = abs(estimate),
+  direction  = factor(estimate > 0,
+                      levels = c(FALSE, TRUE),
+                      labels = c("Negative", "Positive"))
+)]
+
+# Retirer l'intercept et garder le top N
+coef_dt <- coef_dt[term != "(Intercept)"][
+  order(-abs_effect)][1:min(top_n, .N)]
+
+# ---- Figure ----
+g_coef <- ggplot(coef_dt,
+                 aes(x = estimate,
+                     y = reorder(term, abs_effect),
+                     color = direction)) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                 height = 0.3, linewidth = 0.5) +
+  geom_point(size = 3) +
+  geom_text(aes(label = ifelse(p.value < 0.001, "p<0.001",
+                               sprintf("p=%.3f", p.value))),
+            hjust = -0.15, size = 2.5,
+            color = "black") +
+  scale_color_manual(
+    name   = "Effect direction",
+    values = c("Positive" = COL_DETOUR, "Negative" = COL_DIRECT)
+  ) +
+  labs(
+    title = paste0("Logistic Regression — Top ", top_n, " coefficients\n",
+                   "F1-score (full): ", round(score_rl$F1_score, 4)),
+    x = "Coefficient (log-odds)",
+    y = "Feature"
+  ) +
+  theme_ms(8) +
+  theme(axis.text.y = element_text(size = 7))
+
+ggsave(paste0("model_reglog_coef_", fig_suffix, ".png"), g_coef,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_coef)
+rm(mod_rl_full, tr_coef)
+```
+
+
+
+
+Remplace le GLM par une régression logistique pénalisée qui force les coefficients redondants à zéro:
+"Missing values were imputed by the median of the training set before fitting the LASSO."
+```{r}
+library(glmnet)
+# ---- Ré-entraînement du modèle complet pour les coefficients ----
+# (do_reg_log() ne retourne pas l'objet modèle)
+reglog_features <- c(
+  "fmedian_delay","fmad_delay","fIQR_delay","fCV_delay",
+  "fQ095_delay","fQ095_Q005","fmeanTRIM10_delay",
+  "fMASD_delay","fRMSJ_delay","fsd_diff_delay",
+  "fIPDV_neg_delay","fIPDV_pos_delay",
+  "facf_lag0","facf_lag1","facf_lag2","facf_lag3","facf_lag4",
+  "facf_lag5","facf_lag6","facf_lag7","facf_lag8","facf_lag9","facf_lag10",
+  "fACF_sum","fslope_t","fCUSUM_max","fearly_diff",
+  "alpha_hat","beta_hat","r2","sigma_eps",
+  "rho_tilde","lambda_hat",
+  "fkurtosis_delay","fskew_delay","fhill",
+  "delay","flow_size",
+  "d_alpha","d_masd","d_cv","d_beta"
+)
+
+tr_coef <- copy(r_rl$tr)
+
+# Même preprocessing que do_reg_log()
+alpha_base  <- tr_coef[attacked == 0, median(alpha_hat,   na.rm = TRUE)]
+jitter_base <- tr_coef[attacked == 0, median(fMASD_delay, na.rm = TRUE)]
+cv_base     <- tr_coef[attacked == 0, median(fCV_delay,   na.rm = TRUE)]
+beta_base   <- tr_coef[attacked == 0, median(beta_hat,    na.rm = TRUE)]
+tr_coef[, d_alpha := alpha_hat   - alpha_base]
+tr_coef[, d_masd  := fMASD_delay - jitter_base]
+tr_coef[, d_cv    := fCV_delay   - cv_base]
+tr_coef[, d_beta  := beta_hat    - beta_base]
+
+skew_cols <- intersect(c("fCUSUM_max","fhill","rho_tilde","lambda_hat",
+                          "fQ095_delay","fQ095_Q005"), names(tr_coef))
+for (nm in skew_cols) tr_coef[[nm]] <- log1p(pmax(tr_coef[[nm]], 0))
+
+keep_coef <- colnames(tr_coef)[colnames(tr_coef) %in% reglog_features]
+keep_coef <- keep_coef[!sapply(tr_coef[, ..keep_coef],
+                               function(x) length(unique(x)) <= 1)]
+
+counts_c     <- table(tr_coef$attacked)
+obs_weights  <- ifelse(tr_coef$attacked == "0",
+                       1 / (2 * (counts_c["0"] / sum(counts_c))),
+                       1 / (2 * (counts_c["1"] / sum(counts_c))))
+
+
+#Il y a des NA dans les features. imputation par la médiane avant (plus transparent pour le manuscrit) :
+# X_mat <- as.matrix(tr_coef[, ..keep_coef])
+# X_mat <- makeX(
+#   train = as.data.frame(tr_coef[, ..keep_coef]),
+#   na.impute = TRUE
+# )
+
+# Remplacer chaque NA par la médiane de la colonne
+X_df  <- as.data.frame(tr_coef[, ..keep_coef])
+X_mat <- as.matrix(
+  lapply(X_df, function(col) {
+    col[is.na(col)] <- median(col, na.rm = TRUE)
+    col
+  }) |> as.data.frame()
+)
+
+# Vérification
+cat("[INFO] NA restants :", sum(is.na(X_mat)), "\n")
+y_vec <- as.numeric(as.character(tr_coef$attacked))
+
+cv_lasso <- cv.glmnet(X_mat, y_vec,
+                      family  = "binomial",
+                      alpha   = 1,          # LASSO (alpha=0 = Ridge)
+                      weights = obs_weights,
+                      nfolds  = 5)
+
+mod_lasso <- glmnet(X_mat, y_vec,
+                    family  = "binomial",
+                    alpha   = 1,
+                    lambda  = cv_lasso$lambda.1se,
+                    weights = obs_weights)
+
+# Coefficients non nuls sélectionnés par le LASSO
+coef_lasso <- as.data.table(
+  as.matrix(coef(mod_lasso)),
+  keep.rownames = "term"
+)
+setnames(coef_lasso, c("term", "estimate"))
+coef_lasso <- coef_lasso[term != "(Intercept)" & estimate != 0][
+  order(-abs(estimate))]
+
+cat("[INFO]", nrow(coef_lasso), "features sélectionnées par le LASSO\n")
+print(coef_lasso)
+
+# Figure
+g_lasso <- ggplot(coef_lasso,
+                  aes(x = estimate,
+                      y = reorder(term, abs(estimate)),
+                      fill = factor(estimate > 0,
+                                    levels = c(FALSE, TRUE),
+                                    labels = c("Direct", "Detour")))) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  geom_col(width = 0.6) +
+  scale_fill_manual(name   = "Effect direction",
+                    values = c("Detour" = COL_DETOUR,
+                               "Direct" = COL_DIRECT)) +
+  labs(title = paste0("Logistic Regression LASSO - selected features\n",
+                      "lambda.1se = ", round(cv_lasso$lambda.1se, 5),
+                      "  |  F1-score (full): ", round(score_rl$F1_score, 4)),
+       x = "Coefficient (log-odds)", y = "Feature") +
+  theme_ms(8) +
+  theme(axis.text.y = element_text(size = 7))
+
+ggsave(paste0("model_reglog_lasso_", fig_suffix, ".png"), g_lasso,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_lasso)
+```
+
+```{r}
+library(ggcorrplot)
+
+cor_mat <- cor(as.matrix(tr_coef[, ..keep_coef]), use = "pairwise.complete.obs")
+
+g_cor <- ggcorrplot(cor_mat,
+            method = "square",#, type = "upper",
+           tl.cex = 5, tl.col = "black") +
+  labs(title = "Logistic Regression: Correlation between features") +
+  theme_ms(7)+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+ggsave(paste0("model_reglog_correlation_", fig_suffix, ".png"), g_cor,
+       device = "png", path = "scratch/figure", width = 1500, height = 1500, units = "px")
+print(g_cor)
+```
+
+## Modèle 5 — DAE (Denoising Autoencoder)
+
+<!-- ```{r model-dae, fig.width=14, fig.height=10} -->
+<!-- m_dae <- models[[which(sapply(models, function(m) -->
+<!--   identical(m$model_function, do_dae)))]] -->
+
+<!-- r_dae           <- repartition_for(m_dae, current_param) -->
+<!-- current_param$model <- m_dae$name -->
+
+<!-- # do_dae() retourne test_set avec colonne prediction ajoutée par commun_info() -->
+<!-- c(score_dae, te_dae) %<-% do_dae(copy(r_dae$tr), copy(r_dae$te), r_dae$cp) -->
+<!-- cat("[INFO] DAE F1:", round(score_dae$F1_score, 4), "\n") -->
+
+<!-- # Figure : (t_start, fmean_delay) coloré par prédiction, forme = vrai label -->
+<!-- g_dae <- ggplot(te_dae, -->
+<!--                 aes(x = t_start, y = fmean_delay, -->
+<!--                     color = prediction, shape = attacked)) + -->
+<!--   geom_point(size = 3, stroke = 1, alpha = 0.85) + -->
+<!--   scale_color_manual(name = "Prédiction DAE", -->
+<!--                      values = c("1" = COL_DETOUR, "0" = COL_DIRECT), -->
+<!--                      labels = c("0" = "Sain", "1" = "Anomalie")) + -->
+<!--   scale_shape_manual(name = "Vrai label", -->
+<!--                      values = c("1" = 3, "0" = 4), -->
+<!--                      labels = c("0" = "Direct", "1" = "Detour")) + -->
+<!--   labs(title = paste0("DAE — prédictions (test set)\nF1-score: ", -->
+<!--                       round(score_dae$F1_score, 4)), -->
+<!--        x = "Sending time (s)", y = "Mean Delay (s)") + -->
+<!--   ylim(c(0, max(a0_a1$delay))) + -->
+<!--   theme_ms() -->
+
+<!-- ggsave(paste0("model_dae_", fig_suffix, ".png"), g_dae, -->
+<!--        device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px") -->
+<!-- print(g_dae) -->
+<!-- ``` -->
+
+```{r}
+## Modèle 5 — DAE (Denoising Autoencoder)
+
+m_dae <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_dae)))]]
+r_dae               <- repartition_for(m_dae, current_param)
+current_param$model <- m_dae$name
+
+# c(score_dae, te_dae) %<-% do_dae(copy(r_dae$tr), copy(r_dae$te), r_dae$cp)
+# cat("[INFO] DAE F1:", round(score_dae$F1_score, 4), "\n")
+# 
+# tr_dae <- copy(r_dae$tr)
+# tr_dae[attacked == 0, source := "Direct (Train)"]
+# tr_dae[attacked == 1, source := "Detour (Train)"]
+# 
+# te_dae[, outcome := fcase(
+#   attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+#   attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+#   attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+#   attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+# )]
+# 
+# g_dae <- ggplot() +
+#   geom_point(data = tr_dae,
+#              aes(x = t_start, y = fmean_delay,
+#                  color = source, shape = source),
+#              size = 2, stroke = 1, alpha = 0.85) +
+#   geom_point(data = te_dae,
+#              aes(x = t_start, y = fmean_delay,
+#                  color = outcome, shape = outcome),
+#              size = 2, stroke = 1, alpha = 1) +
+#   scale_color_manual(name   = "Label & Outcome",
+#                      values = outcome_colors) +
+#   scale_shape_manual(name   = "Label & Outcome",
+#                      values = outcome_shapes) +
+#   labs(title = paste0("DAE Model Decision\nF1-score: ",
+#                       round(score_dae$F1_score, 4)),
+#        x = "Sending time (s)", y = "Mean Delay (s)") +
+#   ylim(c(0, max(a0_a1$delay))) +
+#   guides(
+#     color = guide_legend(order = 1),
+#     shape = guide_legend(order = 1)
+#   ) +
+#   theme_ms(10)
+# 
+# ggsave(paste0("model_dae_", fig_suffix, ".png"), g_dae,
+#        device = "png", path = "scratch/figure",
+#        width = 2045, height = 1101, units = "px")
+# print(g_dae)
+```
+
+```{r}
+## DAE — graphes d'analyse
+
+# ---- Recalcul des objets intermédiaires ----
+# (do_dae() ne les retourne pas — on recharge le modèle sauvegardé)
+
+dae_features <- c(
+  "fmedian_delay","fmad_delay","fIQR_delay","fCV_delay",
+  "fQ095_delay","fQ095_Q005","fmeanTRIM10_delay",
+  "fMASD_delay","fRMSJ_delay","fsd_diff_delay",
+  "fIPDV_neg_delay","fIPDV_pos_delay",
+  "facf_lag0","facf_lag1","facf_lag2","facf_lag3","facf_lag4",
+  "facf_lag5","facf_lag6","facf_lag7","facf_lag8","facf_lag9","facf_lag10",
+  "fACF_sum","fslope_t","fCUSUM_max","fearly_diff",
+  "alpha_hat","beta_hat","r2","sigma_eps",
+  "rho_tilde","lambda_hat","fmean_delay","duty","run_max",
+  "fkurtosis_delay","fskew_delay","fhill",
+  "delay","flow_size","t_start","t_end"
+)
+
+# Copies fraîches + même preprocessing que do_dae()
+tr_dae_viz <- copy(r_dae$tr)
+te_dae_viz <- copy(r_dae$te)
+
+skew_cols_dae <- intersect(
+  # c("fCUSUM_max","fhill","rho_tilde","lambda_hat",
+  #   "fQ095_delay","fQ095_Q005","fmean_delay","run_max"),
+  c("fCUSUM_max","fhill","rho_tilde","lambda_hat",
+    "fQ095_delay","fQ095_Q005","fPOT_rate_u",
+    "fmean_delay","fQ095_delay","run_max"),
+  names(tr_dae_viz)
+)
+for (nm in skew_cols_dae) {
+  tr_dae_viz[[nm]] <- log1p(pmax(tr_dae_viz[[nm]], 0))
+  te_dae_viz[[nm]] <- log1p(pmax(te_dae_viz[[nm]], 0))
+}
+
+keep_dae_viz <- colnames(tr_dae_viz)[colnames(tr_dae_viz) %in% dae_features]
+mins_dae <- rbindlist(list(tr_dae_viz, te_dae_viz))[, ..keep_dae_viz][,
+              lapply(.SD, min, na.rm = TRUE)]
+maxs_dae <- rbindlist(list(tr_dae_viz, te_dae_viz))[, ..keep_dae_viz][,
+              lapply(.SD, max, na.rm = TRUE)]
+
+X_train_dae <- as.matrix(tr_dae_viz[, ..keep_dae_viz][,
+  Map(function(col, lo, hi) normalize_me(col, lo, hi),
+      .SD, mins_dae, maxs_dae)])
+X_test_dae  <- as.matrix(te_dae_viz[, ..keep_dae_viz][,
+  Map(function(col, lo, hi) normalize_me(col, lo, hi),
+      .SD, mins_dae, maxs_dae)])
+
+# check
+na_counts <- colSums(is.na(X_train_dae))
+cat("=== Features avec NA dans X_train_dae ===\n")
+print(sort(na_counts[na_counts > 0], decreasing = TRUE))
+cat("Lignes avec au moins 1 NA :", sum(apply(X_train_dae, 1, anyNA)), "/", nrow(X_train_dae), "\n")
+
+
+add_noise_dae <- function(x, noise_factor = 0.2) {
+  x + noise_factor * matrix(rnorm(length(x)), nrow = nrow(x), ncol = ncol(x))
+}
+X_test_noisy_dae <- add_noise_dae(X_test_dae)
+
+# Dimensions du DAE
+original_dim <- ncol(X_train_dae) # input_dim
+latent_dim <- 6L # 6L Taille de l’espace latent
+intermediate_dim <- 12
+
+# Entrée
+input_layer <- layer_input(shape = original_dim)
+
+# Encodeur : transformation vers un espace latent
+x <- layer_dense(input_layer, units = intermediate_dim, activation = "relu")
+
+z <- layer_dense(x, units = latent_dim, activation = "relu")  
+
+encoder <- keras_model(input_layer, z, name= "encoder")
+
+# Décodeur
+decoder_input <- layer_input(shape = latent_dim)
+decoder_dense <- decoder_input %>%
+  layer_dense(units = intermediate_dim, activation = "relu") %>%
+  #layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = original_dim, activation = "sigmoid") #linear")
+
+# Modèle du décodeur
+decoder <- keras_model(decoder_input, decoder_dense, name="decoder")
+
+inputs <- layer_input(shape = original_dim)
+latents <- encoder(inputs)
+outputs <- decoder(latents)
+mod_dae <- keras_model(inputs, outputs, name="dae")
+mod_dae %>% compile(optimizer = optimizer_adam(), loss = "mse")
+
+
+X_train_noisy <- add_noise_dae(X_train_dae, noise_factor = 0.2)
+mod_dae %>% fit(x= X_train_noisy, y= X_train_dae, 
+                epochs = 1000, #600,
+                batch_size = floor(nrow(X_train_dae)*0.1), #75
+                shuffle = TRUE,
+                validation_split = 0.2,
+                callbacks = list(callback_early_stopping(patience = 10, restore_best_weights = TRUE))
+)
+
+# # Ré-entraîner le DAE directement avec les matrices déjà calculées
+# original_dim <- ncol(X_train_dae)
+# latent_dim   <- 6L
+# 
+# inp   <- layer_input(shape = original_dim)
+# x_enc <- layer_dense(inp, units = 12, activation = "relu")
+# z_enc <- layer_dense(x_enc, units = latent_dim, activation = "relu",
+#                      name = "encoder")
+# x_dec <- layer_dense(z_enc, units = 12, activation = "relu")
+# out   <- layer_dense(x_dec, units = original_dim, activation = "sigmoid")
+# mod_dae_viz <- keras_model(inp, out, name = "dae")
+# mod_dae_viz |> compile(optimizer = optimizer_adam(), loss = "mse")
+# 
+# X_train_noisy <- X_train_dae + 0.2 * matrix(rnorm(length(X_train_dae)),
+#                                               nrow = nrow(X_train_dae))
+# mod_dae_viz |> fit(
+#   x = X_train_noisy, y = X_train_dae,
+#   epochs           = 1000,
+#   batch_size       = floor(nrow(X_train_dae) * 0.1),
+#   shuffle          = TRUE,
+#   validation_split = 0.2,
+#   callbacks        = list(callback_early_stopping(
+#     patience             = 10,
+#     restore_best_weights = TRUE))
+# )
+
+# dae_encoder <- get_layer(mod_dae_viz, name = "encoder")
+# dae_encoder <- keras_model(inp, z_enc, name= "encoder")
+# # → continuer avec X_pred_dae, reconstruction_error_dae, etc.
+
+
+# # Charger le modèle DAE sauvegardé
+# c(., fn_dae) %<-% is_charge_before(r_dae$cp, ".keras")
+# mod_dae_viz   <- load_model(paste0(fn_dae, ".keras"))
+# dae_encoder   <- get_layer(mod_dae_viz, name = "encoder")
+
+X_pred_dae           <- mod_dae %>% predict(X_test_noisy_dae)
+reconstruction_error_dae <- rowMeans((X_test_dae - X_pred_dae)^2, na.rm = TRUE)
+threshold_dae        <- quantile(reconstruction_error_dae, 0.90, na.rm = TRUE)
+
+predicted_anomalies_dae <- factor(ifelse(reconstruction_error_dae > threshold_dae, 1, 0), levels = levels(te_dae_viz$attacked))
+c(score_dae, test_set_dae) %<-% commun_info(te_dae_viz, predicted_anomalies_dae, "filename")
+  
+# te_dae_viz[,prediction := predicted_anomalies_dae]
+# Labels
+test_set_dae[, outcome := fcase(
+  attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+)]
+label_factor <- factor(test_set_dae$attacked,
+                       levels = c("0","1"),
+                       labels = c("Direct","Detour"))
+
+truth <- test_set_dae$attacked # te_dae_viz$attacked  # 1 = détourné, 0 = bénin
+pred  <- test_set_dae$prediction # predicted_anomalies_dae
+
+TP <- sum(truth == 1 & pred == 1)
+FN <- sum(truth == 1 & pred == 0)
+FP <- sum(truth == 0 & pred == 1)
+TN <- sum(truth == 0 & pred == 0)
+
+recall_dae <- TP / (TP + FN)
+fpr_dae    <- FP / (FP + TN)
+cat("Recall:", round(recall_dae, 3), " | Taux de FP:", round(fpr_dae, 3), "\n")
+# 1. Les niveaux/types sont-ils cohérents ?
+str(test_set_dae$attacked)
+str(test_set_dae$prediction)
+table(test_set_dae$attacked, useNA = "always")
+table(test_set_dae$prediction, useNA = "always")
+
+# 2. Le vrai tableau de contingence (pas juste recall/FP dérivés)
+table(truth = test_set_dae$attacked, pred = test_set_dae$prediction)
+
+# 3. Comparer directement predicted_anomalies_dae (avant fusion) et test_set_dae$prediction (après fusion)
+# Doivent être identiques en ordre et en valeur si commun_info() n'a rien cassé :
+length(predicted_anomalies_dae)
+nrow(test_set_dae)
+table(predicted_anomalies_dae)  # doit correspondre à table(test_set_dae$prediction)
+
+# 4. Vérifier directement sur reconstruction_error_dae (sans passer par test_set_dae) :
+# combien de flux VRAIMENT détournés dépassent le seuil, avant toute fusion ?
+truth_direct <- te_dae_viz$attacked
+sum(truth_direct == 1 & reconstruction_error_dae > threshold_dae, na.rm = TRUE)
+sum(truth_direct == 1, na.rm = TRUE)
+
+tr_dae_viz[attacked == 0, source := "Direct (Train)"]
+tr_dae_viz[attacked == 1, source := "Detour (Train)"]
+```
+
+```{r}
+#decison graph
+
+g_dae <- ggplot() +
+  geom_point(data = tr_dae_viz,
+             aes(x = t_start, y = fmean_delay,
+                 color = source, shape = source),
+             size = 2, stroke = 1, alpha = 0.85) +
+  geom_point(data = test_set_dae,
+             aes(x = t_start, y = fmean_delay,
+                 color = outcome, shape = outcome),
+             size = 2, stroke = 1, alpha = 1) +
+  scale_color_manual(name   = "Label & Outcome",
+                     values = outcome_colors) +
+  scale_shape_manual(name   = "Label & Outcome",
+                     values = outcome_shapes) +
+  labs(title = paste0("DAE Model Decision\nF1-score: ",
+                      round(score_dae$F1_score, 4)),
+       x = "Sending time (s)", y = "Mean Delay (s)") +
+  ylim(c(0, max(a0_a1$delay))) +
+  guides(
+    color = guide_legend(order = 1),
+    shape = guide_legend(order = 1)
+  ) +
+  theme_ms(10)
+
+ggsave(paste0("model_dae_", fig_suffix, ".png"), g_dae,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_dae)
+```
+
+
+```{r}
+# ---- DAE Figure 1 : t-SNE sur l'espace latent ----
+library(Rtsne)
+
+z_hidden_dae <- as.array(encoder(X_test_noisy_dae)) #predict(encoder, X_test_noisy_dae)
+tsne_dae     <- Rtsne(z_hidden_dae, dims = 2, na.rm = TRUE, verbose = FALSE, perplexity = 10)
+
+df_tsne_dae <- data.table(
+  dim1    = tsne_dae$Y[, 1],
+  dim2    = tsne_dae$Y[, 2],
+  outcome = test_set_dae$outcome
+)
+
+g_dae_tsne <- ggplot(df_tsne_dae,
+                     aes(x = dim1, y = dim2,
+                         color = outcome, shape = outcome)) +
+  geom_point(size = 2, stroke = 1, alpha = 1) +
+  scale_color_manual(name   = "Test label outcome",
+                     values = outcome_colors[!names(outcome_colors) %in%
+                                c("Direct (Train)","Detour (Train)")]) +
+  scale_shape_manual(name   = "Test label outcome",
+                     values = outcome_shapes[!names(outcome_shapes) %in%
+                                c("Direct (Train)","Detour (Train)")]) +
+  labs(title = paste0("DAE: Latent space (t-SNE on hidden layer)\nF1-score: ",
+                      round(score_dae$F1_score, 4)),
+       x = "Dim 1", y = "Dim 2") +
+  guides(color = guide_legend(order = 1),
+         shape = guide_legend(order = 1))+ #, shape = "none") +
+  theme_ms(10)
+
+ggsave(paste0("model_dae_tsne_", fig_suffix, ".png"), g_dae_tsne,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_dae_tsne)
+```
+
+```{r}
+# ---- DAE Figure 2 : histogramme erreur de reconstruction ----
+df_err_dae <- data.table(
+  error = reconstruction_error_dae,
+  label = label_factor
+)
+
+g_dae_hist <- ggplot(df_err_dae, aes(x = error, fill = label)) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 50) +
+  geom_vline(xintercept = threshold_dae, linetype = "dashed",
+             color = "red", linewidth = 1) +
+  annotate("text",
+           x = threshold_dae * 1.05, y = Inf, vjust = 1.5, hjust = 0,
+           label = paste0("Q90 = ", round(threshold_dae, 5)),
+           size = 4, color = "red") +
+  scale_fill_manual(name   = "True test label",
+                    values = c("Direct" = COL_DIRECT, "Detour" = COL_DETOUR)) +
+  labs(title = paste0("DAE: Reconstruction Error by Class\nF1-score: ",
+                      round(score_dae$F1_score, 4)),
+       x = "Reconstruction Error (MSE)", y = "Count") +
+  theme_ms(10)
+
+ggsave(paste0("model_dae_error_hist_", fig_suffix, ".png"), g_dae_hist,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_dae_hist)
+```
+
+```{r}
+# ---- DAE Figure 3 : heatmap erreur par feature et par classe ----
+err_matrix_dae <- (X_test_dae - X_pred_dae)^2
+df_err_mat     <- as.data.table(err_matrix_dae)
+df_err_mat[, label := label_factor]
+
+df_melt_dae <- melt(df_err_mat, id.vars = "label",
+                    variable.name = "Feature", value.name = "Error")
+setDT(df_melt_dae)
+df_summary_dae <- df_melt_dae[,
+  .(Mean_Error = mean(Error, na.rm = TRUE)),
+  by = .(Feature, label)]
+
+g_dae_heat <- ggplot(df_summary_dae,
+                     aes(x = Feature, y = label, fill = Mean_Error)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(name = "Mean Error",
+                      low = "white", high = COL_DETOUR,
+                      limits = c(0, 1)) +#max(df_summary_dae$Mean_Error, na.rm = TRUE))) +
+  labs(title = paste0("DAE: Error per Feature and Class\nF1-score: ",
+                      round(score_dae$F1_score, 4)),
+       x = "Feature", y = "Class") +
+  theme_ms(10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7))
+
+ggsave(paste0("model_dae_heatmap_", fig_suffix, ".png"), g_dae_heat,
+       device = "png", path = "scratch/figure",
+       width = 3000, height = 1101, units = "px")
+print(g_dae_heat)
+```
+
+<!-- ```{r} -->
+<!-- # ---- DAE Figure 4 : Original vs Reconstructed pour un échantillon ---- -->
+<!-- i_sample <- 28   # index à ajuster -->
+
+<!-- df_sample_dae <- data.table( -->
+<!--   Original      = X_test_dae[i_sample, ], -->
+<!--   Reconstructed = X_pred_dae[i_sample, ], -->
+<!--   Feature       = colnames(X_test_dae) -->
+<!-- ) -->
+<!-- df_sample_melt <- melt(df_sample_dae, id.vars = "Feature", -->
+<!--                        variable.name = "Type", value.name = "Value") -->
+
+<!-- g_dae_sample <- ggplot(df_sample_melt, -->
+<!--                        aes(x = Feature, y = Value, fill = Type)) + -->
+<!--   geom_bar(stat = "identity", position = "dodge", width = 0.7) + -->
+<!--   scale_fill_manual(name   = "Type", -->
+<!--                     values = c("Original" = COL_DIRECT, -->
+<!--                                "Reconstructed" = COL_DETOUR)) + -->
+<!--   labs(title = paste0("DAE — original vs reconstructed (sample #", i_sample, ")\n", -->
+<!--                       "True label: ", label_factor[i_sample]), -->
+<!--        x = "Feature", y = "Normalized value") + -->
+<!--   theme_ms(8) + -->
+<!--   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5)) -->
+
+<!-- ggsave(paste0("model_dae_sample_", fig_suffix, ".png"), g_dae_sample, -->
+<!--        device = "png", path = "scratch/figure", -->
+<!--        width = 3000, height = 1101, units = "px") -->
+<!-- print(g_dae_sample) -->
+<!-- rm(mod_dae_viz) -->
+<!-- ``` -->
+
+
+## Modèle 6 — VAE (Variational Autoencoder)
+
+<!-- ```{r model-vae, fig.width=14, fig.height=10} -->
+<!-- m_vae <- models[[which(sapply(models, function(m) -->
+<!--   identical(m$model_function, do_vae)))]] -->
+
+<!-- r_vae           <- repartition_for(m_vae, current_param) -->
+<!-- current_param$model <- m_vae$name -->
+
+<!-- c(score_vae, te_vae) %<-% do_vae(copy(r_vae$tr), copy(r_vae$te), r_vae$cp) -->
+<!-- cat("[INFO] VAE F1:", round(score_vae$F1_score, 4), "\n") -->
+
+<!-- # Figure 1 : (t_start, fmean_delay) coloré par prédiction -->
+<!-- g_vae <- ggplot(te_vae, -->
+<!--                 aes(x = t_start, y = fmean_delay, -->
+<!--                     color = prediction, shape = attacked)) + -->
+<!--   geom_point(size = 3, stroke = 1, alpha = 0.85) + -->
+<!--   scale_color_manual(name = "Prédiction VAE", -->
+<!--                      values = c("1" = COL_DETOUR, "0" = COL_DIRECT), -->
+<!--                      labels = c("0" = "Sain", "1" = "Anomalie")) + -->
+<!--   scale_shape_manual(name = "Vrai label", -->
+<!--                      values = c("1" = 3, "0" = 4), -->
+<!--                      labels = c("0" = "Direct", "1" = "Detour")) + -->
+<!--   labs(title = paste0("VAE — prédictions (test set)\nF1-score: ", -->
+<!--                       round(score_vae$F1_score, 4)), -->
+<!--        x = "Sending time (s)", y = "Mean Delay (s)") + -->
+<!--   ylim(c(0, max(a0_a1$delay))) + -->
+<!--   theme_ms(10) -->
+
+<!-- ggsave(paste0("model_vae_pred_", fig_suffix, ".png"), g_vae, -->
+<!--        device = "png", path = "scratch/figure", width = 2045, height = 1101, units = "px") -->
+<!-- print(g_vae) -->
+
+<!-- # Figure 2 : espace latent z1 vs z2 (relu depuis l'encodeur sauvegardé) -->
+<!-- c(is_vae_saved, fn_vae) %<-% is_charge_before(r_vae$cp, "_encoder.keras") -->
+<!-- enc_path <- paste0(fn_vae, "_encoder.keras") -->
+
+<!-- if (file.exists(enc_path)) { -->
+<!--   vae_enc_tmp <- tryCatch(load_model(enc_path), error = function(e) NULL) -->
+
+<!--   if (!is.null(vae_enc_tmp)) { -->
+<!--     vae_features_ls <- c( -->
+<!--       "fmedian_delay","fmad_delay","fIQR_delay","fCV_delay", -->
+<!--       "fQ095_delay","fQ095_Q005","fmeanTRIM10_delay", -->
+<!--       "fMASD_delay","fRMSJ_delay","fsd_diff_delay", -->
+<!--       "fIPDV_neg_delay","fIPDV_pos_delay", -->
+<!--       "facf_lag0","facf_lag1","facf_lag2","facf_lag3","facf_lag4", -->
+<!--       "facf_lag5","facf_lag6","facf_lag7","facf_lag8","facf_lag9","facf_lag10", -->
+<!--       "fACF_sum","fslope_t","fCUSUM_max","fearly_diff", -->
+<!--       "alpha_hat","beta_hat","r2","sigma_eps", -->
+<!--       "rho_tilde","lambda_hat","fmean_delay","duty","run_max", -->
+<!--       "fkurtosis_delay","fskew_delay","fhill", -->
+<!--       "delay","flow_size","t_start","t_end" -->
+<!--     ) -->
+<!--     keep_ls <- colnames(te_vae)[colnames(te_vae) %in% vae_features_ls] -->
+
+<!--     mins_ls <- rbindlist(list(r_vae$tr, te_vae))[, ..keep_ls][, -->
+<!--                  lapply(.SD, min, na.rm = TRUE)] -->
+<!--     maxs_ls <- rbindlist(list(r_vae$tr, te_vae))[, ..keep_ls][, -->
+<!--                  lapply(.SD, max, na.rm = TRUE)] -->
+
+<!--     X_ls <- as.matrix(te_vae[, ..keep_ls][, Map(function(col, lo, hi) { -->
+<!--       normalize_me(col, lo, hi) -->
+<!--     }, .SD, mins_ls, maxs_ls)]) -->
+
+<!--     layer_sampler_ls <- new_layer_class( -->
+<!--       classname = "Sampler", -->
+<!--       call = function(z_mean, z_log_var) { -->
+<!--         epsilon <- tf$random$normal(shape = tf$shape(z_mean)) -->
+<!--         z_mean + exp(0.5 * z_log_var) * epsilon -->
+<!--       } -->
+<!--     ) -->
+<!--     sampler_ls <- layer_sampler_ls() -->
+<!--     pred_enc   <- predict(vae_enc_tmp, X_ls) -->
+<!--     z_mat      <- as.matrix(sampler_ls(pred_enc[[1]], pred_enc[[2]])) -->
+<!--     z_dt       <- as.data.table(z_mat) -->
+<!--     setnames(z_dt, paste0("z", seq_len(ncol(z_dt)))) -->
+<!--     z_dt[, label      := te_vae$attacked] -->
+<!--     z_dt[, prediction := te_vae$prediction] -->
+
+<!--     g_vae_latent <- ggplot(z_dt, -->
+<!--                            aes(x = z1, y = z2, color = label, shape = prediction)) + -->
+<!--       geom_point(size = 3, stroke = 1, alpha = 0.85) + -->
+<!--       scale_color_manual(name = "Vrai label", -->
+<!--                          values = c("1" = COL_DETOUR, "0" = COL_DIRECT), -->
+<!--                          labels = c("0" = "Direct", "1" = "Detour")) + -->
+<!--       scale_shape_manual(name = "Prédiction VAE", -->
+<!--                          values = c("1" = 3, "0" = 4), -->
+<!--                          labels = c("0" = "Sain", "1" = "Anomalie")) + -->
+<!--       labs(title = paste0("VAE — espace latent (z\u2081, z\u2082)\nF1-score: ", -->
+<!--                           round(score_vae$F1_score, 4)), -->
+<!--            x = "z\u2081", y = "z\u2082") + -->
+<!--       theme_ms() -->
+
+<!--     ggsave(paste0("model_vae_latent_", fig_suffix, ".png"), g_vae_latent, -->
+<!--            device = "png", path = "scratch/figure", -->
+<!--            width = 2045, height = 1101, units = "px") -->
+<!--     print(g_vae_latent) -->
+<!--     rm(vae_enc_tmp, z_dt) -->
+<!--   } -->
+<!-- } else { -->
+<!--   message("[INFO] Encodeur VAE non trouvé sur disque — espace latent non tracé.", -->
+<!--           "\n       Définir do_evolution = TRUE pour sauvegarder le modèle.") -->
+<!-- } -->
+<!-- ``` -->
+
+```{r}
+## Modèle 6 — VAE (Variational Autoencoder)
+
+m_vae <- models[[which(sapply(models, function(m)
+  identical(m$model_function, do_vae)))]]
+r_vae               <- repartition_for(m_vae, current_param)
+current_param$model <- m_vae$name
+
+c(score_vae, te_vae) %<-% do_vae(copy(r_vae$tr), copy(r_vae$te), r_vae$cp)
+cat("[INFO] VAE F1:", round(score_vae$F1_score, 4), "\n")
+
+tr_vae <- copy(r_vae$tr)
+tr_vae[attacked == 0, source := "Direct (Train)"]
+tr_vae[attacked == 1, source := "Detour (Train)"]
+
+te_vae[, outcome := fcase(
+  attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+)]
+# 
+# # Figure 1 : (t_start, fmean_delay)
+# g_vae <- ggplot() +
+#   geom_point(data = tr_vae,
+#              aes(x = t_start, y = fmean_delay,
+#                  color = source, shape = source),
+#              size = 3, stroke = 1, alpha = 0.85) +
+#   geom_point(data = te_vae,
+#              aes(x = t_start, y = fmean_delay,
+#                  color = outcome, shape = outcome),
+#              size = 3, stroke = 1, alpha = 1) +
+#   scale_color_manual(name   = "Label & Outcome",
+#                      values = outcome_colors) +
+#   scale_shape_manual(name   = "Label & Outcome",
+#                      values = outcome_shapes) +
+#   labs(title = paste0("VAE — predictions (test set)\nF1-score: ",
+#                       round(score_vae$F1_score, 4)),
+#        x = "Sending time (s)", y = "Mean Delay (s)") +
+#   ylim(c(0, max(a0_a1$delay))) +
+#   guides(
+#     color = guide_legend(order = 1),
+#     shape = guide_legend(order = 1)
+#   ) +
+#   theme_ms(10)
+# 
+# ggsave(paste0("model_vae_pred_", fig_suffix, ".png"), g_vae,
+#        device = "png", path = "scratch/figure",
+#        width = 2045, height = 1101, units = "px")
+# print(g_vae)
+# 
+# # Figure 2 : espace latent z1 vs z2
+# c(is_vae_saved, fn_vae) %<-% is_charge_before(r_vae$cp, "_encoder.keras")
+# enc_path <- paste0(fn_vae, "_encoder.keras")
+# 
+# if (file.exists(enc_path)) {
+#   vae_enc_tmp <- tryCatch(load_model(enc_path), error = function(e) NULL)
+# 
+#   if (!is.null(vae_enc_tmp)) {
+#     vae_features_ls <- c(
+#       "fmedian_delay","fmad_delay","fIQR_delay","fCV_delay",
+#       "fQ095_delay","fQ095_Q005","fmeanTRIM10_delay",
+#       "fMASD_delay","fRMSJ_delay","fsd_diff_delay",
+#       "fIPDV_neg_delay","fIPDV_pos_delay",
+#       "facf_lag0","facf_lag1","facf_lag2","facf_lag3","facf_lag4",
+#       "facf_lag5","facf_lag6","facf_lag7","facf_lag8","facf_lag9","facf_lag10",
+#       "fACF_sum","fslope_t","fCUSUM_max","fearly_diff",
+#       "alpha_hat","beta_hat","r2","sigma_eps",
+#       "rho_tilde","lambda_hat","fmean_delay","duty","run_max",
+#       "fkurtosis_delay","fskew_delay","fhill",
+#       "delay","flow_size","t_start","t_end"
+#     )
+#     keep_ls <- colnames(te_vae)[colnames(te_vae) %in% vae_features_ls]
+# 
+#     mins_ls <- rbindlist(list(r_vae$tr, te_vae))[, ..keep_ls][,
+#                  lapply(.SD, min, na.rm = TRUE)]
+#     maxs_ls <- rbindlist(list(r_vae$tr, te_vae))[, ..keep_ls][,
+#                  lapply(.SD, max, na.rm = TRUE)]
+# 
+#     X_ls <- as.matrix(te_vae[, ..keep_ls][, Map(function(col, lo, hi) {
+#       normalize_me(col, lo, hi)
+#     }, .SD, mins_ls, maxs_ls)])
+# 
+#     layer_sampler_ls <- new_layer_class(
+#       classname = "Sampler",
+#       call = function(z_mean, z_log_var) {
+#         epsilon <- tf$random$normal(shape = tf$shape(z_mean))
+#         z_mean + exp(0.5 * z_log_var) * epsilon
+#       }
+#     )
+#     sampler_ls <- layer_sampler_ls()
+#     pred_enc   <- predict(vae_enc_tmp, X_ls)
+#     z_mat      <- as.matrix(sampler_ls(pred_enc[[1]], pred_enc[[2]]))
+#     z_dt       <- as.data.table(z_mat)
+#     setnames(z_dt, paste0("z", seq_len(ncol(z_dt))))
+# 
+#     # Outcome sur l'espace latent
+#     z_dt[, outcome := te_vae$outcome]
+# 
+#     g_vae_latent <- ggplot(z_dt,
+#                            aes(x = z1, y = z2,
+#                                color = outcome, shape = outcome)) +
+#       geom_point(size = 3, stroke = 1, alpha = 0.85) +
+#       scale_color_manual(
+#         name   = "Label & Outcome",
+#         values = outcome_colors[names(outcome_colors) != "Direct (Train)" &
+#                                 names(outcome_colors) != "Detour (Train)"]
+#       ) +
+#       scale_shape_manual(
+#         name   = "Label & Outcome",
+#         values = outcome_shapes[names(outcome_shapes) != "Direct (Train)" &
+#                                 names(outcome_shapes) != "Detour (Train)"]
+#       ) +
+#       labs(title = paste0("VAE — latent space (z\u2081, z\u2082)\nF1-score: ",
+#                           round(score_vae$F1_score, 4)),
+#            x = "z\u2081", y = "z\u2082") +
+#       guides(
+#         color = guide_legend(order = 1),
+#         shape = guide_legend(order = 1)
+#       ) +
+#       theme_ms(8)
+# 
+#     ggsave(paste0("model_vae_latent_", fig_suffix, ".png"), g_vae_latent,
+#            device = "png", path = "scratch/figure",
+#            width = 2045, height = 1101, units = "px")
+#     print(g_vae_latent)
+#     rm(vae_enc_tmp, z_dt)
+#   }
+# } else {
+#   message("[INFO] Encodeur VAE non trouvé — espace latent non tracé.",
+#           "\n       Définir do_evolution = TRUE pour sauvegarder le modèle.")
+# }
+```
+
+```{r}
+## VAE — graphes d'analyse
+
+# ---- Recalcul des objets intermédiaires ----
+vae_features <- c(
+  "fmedian_delay","fmad_delay","fIQR_delay","fCV_delay",
+  "fQ095_delay","fQ095_Q005","fmeanTRIM10_delay",
+  "fMASD_delay","fRMSJ_delay","fsd_diff_delay",
+  "fIPDV_neg_delay","fIPDV_pos_delay",
+  "facf_lag0","facf_lag1","facf_lag2","facf_lag3","facf_lag4",
+  "facf_lag5","facf_lag6","facf_lag7","facf_lag8","facf_lag9","facf_lag10",
+  "fACF_sum","fslope_t","fCUSUM_max","fearly_diff",
+  "alpha_hat","beta_hat","r2","sigma_eps",
+  "rho_tilde","lambda_hat","fmean_delay","duty","run_max",
+  "fkurtosis_delay","fskew_delay","fhill",
+  "delay","flow_size","t_start","t_end"
+)
+tr_vae_viz <- copy(r_vae$tr)
+te_vae_viz <- copy(r_vae$te)
+
+skew_cols_vae <- intersect(
+  c("fCUSUM_max","fhill","rho_tilde","lambda_hat",
+    "fQ095_delay","fQ095_Q005","fmean_delay","run_max"),
+  names(tr_vae_viz)
+)
+for (nm in skew_cols_vae) {
+  tr_vae_viz[[nm]] <- log1p(pmax(tr_vae_viz[[nm]], 0))
+  te_vae_viz[[nm]] <- log1p(pmax(te_vae_viz[[nm]], 0))
+}
+
+keep_vae_viz <- colnames(tr_vae_viz)[colnames(tr_vae_viz) %in% vae_features]
+mins_vae <- rbindlist(list(tr_vae_viz, te_vae_viz))[, ..keep_vae_viz][,
+              lapply(.SD, min, na.rm = TRUE)]
+maxs_vae <- rbindlist(list(tr_vae_viz, te_vae_viz))[, ..keep_vae_viz][,
+              lapply(.SD, max, na.rm = TRUE)]
+
+X_train_vae <- as.matrix(tr_vae_viz[, ..keep_vae_viz][,
+  Map(function(col, lo, hi) normalize_me(col, lo, hi),
+      .SD, mins_vae, maxs_vae)])
+X_test_vae  <- as.matrix(te_vae_viz[, ..keep_vae_viz][,
+  Map(function(col, lo, hi) normalize_me(col, lo, hi),
+      .SD, mins_vae, maxs_vae)])
+train_att <- as.matrix(as.numeric(as.character(tr_vae_viz$attacked)))
+test_att <- as.matrix(as.numeric(as.character(te_vae_viz$attacked)))
+  
+# # Charger encoder et decoder
+# c(., fn_vae) %<-% is_charge_before(r_vae$cp, "_encoder.keras")
+# vae_enc_viz <- load_model(paste0(fn_vae, "_encoder.keras"))
+# vae_dec_viz <- load_model(paste0(fn_vae, "_decoder.keras"))
+
+# Sampler
+layer_sampler_viz <- new_layer_class(
+  classname = "Sampler",
+  call = function(z_mean, z_log_var) {
+    epsilon <- tf$random$normal(shape = tf$shape(z_mean))
+    z_mean + exp(0.5 * z_log_var) * epsilon
+  }
+)
+sampler_viz <- layer_sampler_viz()
+
+# Dimensions du VAE
+original_dim <- ncol(X_train_vae) # input_dim
+latent_dim <- 2L # Taille de l’espace latent
+intermediate_dim <- original_dim /2 -1
+# model definition
+# Entrée
+input_layer <- layer_input(shape = original_dim)
+
+# Encodeur : transformation vers un espace latent
+x <- layer_dense(input_layer, units = intermediate_dim, activation = "relu")
+
+z_mean <- layer_dense(x, units = latent_dim, name = "z_mean")  # Moyenne
+z_log_var <- layer_dense(x, units = latent_dim, name = "z_log_var")  # Log-variance
+
+encoder <- keras_model(input_layer, list(z_mean, z_log_var), name= "encoder")
+
+
+# Décodeur
+decoder_input <- layer_input(shape = latent_dim)
+decoder_dense <- decoder_input %>%
+  layer_dense(units = intermediate_dim, activation = "relu") %>%
+  #layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = original_dim, activation = "sigmoid") #linear")
+
+# Modèle du décodeur
+decoder <- keras_model(decoder_input, decoder_dense, name="decoder")
+
+
+
+## autoencodeur
+model_vae <- new_model_class(
+  classname = "VAE",
+  
+  initialize = function(encoder, decoder, ...) {
+    super$initialize(...)
+    self$encoder <- encoder
+    self$decoder <- decoder
+    self$sampler <- layer_sampler_viz()
+    self$total_loss_tracker <- metric_mean(name = "total_loss")
+    self$reconstruction_loss_tracker <- metric_mean(name = "reconstruction_loss")
+    self$kl_loss_tracker <- metric_mean(name = "kl_loss")
+  },
+  
+  metrics = mark_active(function() {
+    list(
+      self$total_loss_tracker,
+      self$reconstruction_loss_tracker,
+      self$kl_loss_tracker
+    )
+  }),
+  
+  train_step = function(data) {
+    with(tf$GradientTape() %as% tape, {
+      
+      c(z_mean, z_log_var) %<-% self$encoder(data)
+      z <- self$sampler(z_mean, z_log_var)
+      
+      reconstruction <- decoder(z)
+      reconstruction_loss <-
+        loss_binary_crossentropy(data, reconstruction) %>%
+        sum(axis = c(1)) %>%
+        mean()
+      
+      kl_loss <- -0.5 * (1 + z_log_var - z_mean^2 - exp(z_log_var))
+      total_loss <- reconstruction_loss + mean(kl_loss)
+    })
+    
+    grads <- tape$gradient(total_loss, self$trainable_weights)
+    self$optimizer$apply_gradients(zip_lists(grads, self$trainable_weights))
+    
+    self$total_loss_tracker$update_state(total_loss)
+    self$reconstruction_loss_tracker$update_state(reconstruction_loss)
+    self$kl_loss_tracker$update_state(kl_loss)
+    
+    list(total_loss = self$total_loss_tracker$result(),
+         reconstruction_loss = self$reconstruction_loss_tracker$result(),
+         kl_loss = self$kl_loss_tracker$result())
+  }
+)
+
+vae <- model_vae(encoder, decoder)
+vae %>% compile(optimizer = optimizer_adam())
+vae %>% fit(X_train_vae, epochs = 1000,
+            shuffle = TRUE,
+            batch_size = floor(nrow(X_train_vae)*0.1),
+            callbacks = list(callback_early_stopping(patience = 10, 
+                                                     restore_best_weights = TRUE, 
+                                                     monitor = "total_loss",
+                                                     mode = "min"))
+)
+vae_encoder <- vae$encoder
+vae_decoder <- vae$decoder
+
+# Encodage test
+sampler <- layer_sampler_viz()
+pred <-  predict(vae_encoder,X_test_vae)#, batch_size = batch_size)
+pred_mean <- (pred[[1]])
+pred_logvar <- pred[[2]]
+z <- sampler(pred_mean, pred_logvar)
+
+X_pred <- predict(vae_decoder, z)#, batch_size = batch_size)
+reconstruction_error <- rowMeans((X_test_vae - X_pred)^2, na.rm = TRUE)
+
+# Définition d'un seuil (ex : quantile 95% des erreurs sur les normales)
+threshold <- quantile(reconstruction_error, 0.90, na.rm = TRUE)
+
+# Marquage des anomalies
+predicted_anomalies <- factor(ifelse(reconstruction_error > threshold, 1, 0), levels = levels(te_vae_viz$attacked))
+
+#c(score_vae, test_set_vae) %<-% commun_info(te_vae_viz, predicted_anomalies, "filename")
+  
+
+
+pred_enc_viz  <- predict(vae_encoder, X_test_vae)
+pred_mean_viz <- as.matrix(pred_enc_viz[[1]])
+pred_logv_viz <- as.matrix(pred_enc_viz[[2]])
+z_viz         <- as.matrix(sampler_viz(pred_enc_viz[[1]], pred_enc_viz[[2]]))
+# 
+# # Reconstruction
+X_pred_vae           <- predict(vae_decoder, z_viz)
+reconstruction_error_vae <- rowMeans((X_test_vae - X_pred_vae)^2, na.rm = TRUE)
+threshold_vae        <- quantile(reconstruction_error_vae, 0.90, na.rm = TRUE)
+#c(score_vae_viz, test_set_vae_viz) %<-% commun_info(te_vae_viz, predicted_anomalies, "filename")
+
+# Labels
+test_set_vae[, outcome := fcase( #te_vae
+  attacked == 1 & prediction == 1, "TP (Detour \u2192 Detour)",
+  attacked == 0 & prediction == 0, "TN (Direct \u2192 Direct)",
+  attacked == 0 & prediction == 1, "FP (Direct \u2192 Detour)",
+  attacked == 1 & prediction == 0, "FN (Detour \u2192 Direct)"
+)]
+label_factor_vae <- factor(test_set_vae$attacked,
+                           levels = c("0","1"),
+                           labels = c("Direct","Detour"))
+
+outcome_no_train <- outcome_colors[!names(outcome_colors) %in%
+                                     c("Direct (Train)","Detour (Train)")]
+shapes_no_train  <- outcome_shapes[!names(outcome_shapes) %in%
+                                     c("Direct (Train)","Detour (Train)")]
+```
+
+```{r}
+# ---- VAE Figure 1 : espace latent z (échantillonné) ----
+z_dt_viz <- data.table(
+  z1      = as.numeric(z[, 1]), #z_viz[, 1],
+  z2      = as.numeric(z[, 2]), #z_viz[, 2],
+  outcome = test_set_vae$outcome
+)
+
+g_vae_z <- ggplot(z_dt_viz, aes(x = z1, y = z2,
+                                 color = outcome, shape = outcome)) +
+  geom_point(size = 2, stroke = 1, alpha = 0.8) +
+  scale_color_manual(name = "Label & Outcome", values = outcome_no_train) +
+  scale_shape_manual(name = "Label & Outcome", values = shapes_no_train) +
+  labs(title = paste0("VAE: latent space z (sampled)\nF1-score: ",
+                      round(score_vae$F1_score, 4)),
+       x = "z\u2081", y = "z\u2082") +
+  guides(color = guide_legend(order = 1), shape = guide_legend(order = 1)) +
+  theme_ms(8)
+
+ggsave(paste0("model_vae_z_", fig_suffix, ".png"), g_vae_z,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_vae_z)
+```
+
+```{r}
+# ---- VAE Figure 2 : espace latent z_mean ----
+zmean_dt <- data.table(
+  z1      = pred_mean_viz[, 1],
+  z2      = pred_mean_viz[, 2],
+  outcome = te_vae$outcome
+)
+
+g_vae_zmean <- ggplot(zmean_dt, aes(x = z1, y = z2,
+                                    color = outcome, shape = outcome)) +
+  geom_point(size = 2, stroke = 1, alpha = 0.8) +
+  scale_color_manual(name = "Label & Outcome", values = outcome_no_train) +
+  scale_shape_manual(name = "Label & Outcome", values = shapes_no_train) +
+  labs(title = paste0("VAE: latent space z_mean\nF1-score: ",
+                      round(score_vae$F1_score, 4)),
+       x = "z\u2081", y = "z\u2082") +
+  guides(color = guide_legend(order = 1), shape = guide_legend(order = 1)) +
+  theme_ms(10)
+
+ggsave(paste0("model_vae_zmean_", fig_suffix, ".png"), g_vae_zmean,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_vae_zmean)
+```
+
+<!-- ```{r} -->
+<!-- # ---- VAE Figure 3 : erreur de reconstruction dans l'espace latent ---- -->
+<!-- z_err_dt <- data.table( -->
+<!--   z1    = z_viz[, 1], -->
+<!--   z2    = z_viz[, 2], -->
+<!--   error = reconstruction_error_vae -->
+<!-- ) -->
+
+<!-- g_vae_z_err <- ggplot(z_err_dt, aes(x = z1, y = z2, fill = error)) + -->
+<!--   geom_point(shape = 21, size = 3, stroke = 0.3, color = "grey30") + -->
+<!--   scale_fill_viridis_c(name = "Recon. error", option = "turbo") + -->
+<!--   labs(title = paste0("VAE — reconstruction error in latent space\nF1-score: ", -->
+<!--                       round(score_vae$F1_score, 4)), -->
+<!--        x = "z\u2081", y = "z\u2082") + -->
+<!--   theme_ms(8) -->
+
+<!-- ggsave(paste0("model_vae_z_error_", fig_suffix, ".png"), g_vae_z_err, -->
+<!--        device = "png", path = "scratch/figure", -->
+<!--        width = 2045, height = 1101, units = "px") -->
+<!-- print(g_vae_z_err) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # ---- VAE Figure 4 : paysage de décision dans l'espace latent ---- -->
+<!-- z1_rng <- seq(min(pred_mean_viz[, 1]), max(pred_mean_viz[, 1]), length.out = 80) -->
+<!-- z2_rng <- seq(min(pred_mean_viz[, 2]), max(pred_mean_viz[, 2]), length.out = 80) -->
+<!-- grid_z <- as.matrix(expand.grid(z1 = z1_rng, z2 = z2_rng)) -->
+
+<!-- recon_grid   <- predict(vae_decoder, grid_z) -->
+<!-- healthy_mean <- colMeans(X_train_vae, na.rm = TRUE) -->
+<!-- grid_error   <- apply(recon_grid, 1, function(x) -->
+<!--   mean((x - healthy_mean)^2, na.rm = TRUE)) -->
+
+<!-- grid_z_dt <- data.table(z1 = grid_z[, 1], z2 = grid_z[, 2], -->
+<!--                          error = grid_error) -->
+
+<!-- g_vae_landscape <- ggplot() + -->
+<!--   geom_contour_filled(data = grid_z_dt, -->
+<!--                       aes(x = z1, y = z2, z = error), bins = 20) + -->
+<!--   geom_point(data = zmean_dt, -->
+<!--              aes(x = z1, y = z2, color = outcome, shape = outcome), -->
+<!--              size = 1.5) + -->
+<!--   scale_color_manual(name = "Label & Outcome", values = outcome_no_train) + -->
+<!--   scale_shape_manual(name = "Label & Outcome", values = shapes_no_train) + -->
+<!--   labs(title = paste0("VAE — decision landscape (latent space)\nF1-score: ", -->
+<!--                       round(score_vae$F1_score, 4)), -->
+<!--        x = "z\u2081", y = "z\u2082") + -->
+<!--   guides(color = guide_legend(order = 1), shape = "none", -->
+<!--          fill  = guide_colorsteps(order = 2)) + -->
+<!--   theme_ms(8) -->
+
+<!-- ggsave(paste0("model_vae_landscape_", fig_suffix, ".png"), g_vae_landscape, -->
+<!--        device = "png", path = "scratch/figure", -->
+<!--        width = 2045, height = 1101, units = "px") -->
+<!-- print(g_vae_landscape) -->
+<!-- ``` -->
+
+```{r}
+# ---- VAE Figure 5 : histogramme erreur de reconstruction ----
+df_err_vae <- data.table(
+  error = reconstruction_error_vae,
+  label = label_factor_vae
+)
+
+g_vae_hist <- ggplot(df_err_vae, aes(x = error, fill = label)) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 50) +
+  geom_vline(xintercept = threshold_vae, linetype = "dashed",
+             color = "red", linewidth = 1) +
+  annotate("text",
+           x = threshold_vae * 1.05, y = Inf, vjust = 1.5, hjust = 0,
+           label = paste0("Q90 = ", round(threshold_vae, 5)),
+           size = 4, color = "red") +
+  scale_fill_manual(name   = "True label",
+                    values = c("Direct" = COL_DIRECT, "Detour" = COL_DETOUR)) +
+  labs(title = paste0("VAE: Reconstruction Error by Class\nF1-score: ",
+                      round(score_vae$F1_score, 4)),
+       x = "Reconstruction error (MSE)", y = "Count") +
+  theme_ms(10)
+
+ggsave(paste0("model_vae_error_hist_", fig_suffix, ".png"), g_vae_hist,
+       device = "png", path = "scratch/figure",
+       width = 2045, height = 1101, units = "px")
+print(g_vae_hist)
+```
+
+```{r}
+# ---- VAE Figure 6 : heatmap erreur par feature et par classe ----
+err_matrix_vae <- (X_test_vae - X_pred_vae)^2
+df_err_vae_mat <- as.data.table(err_matrix_vae)
+df_err_vae_mat[, label := label_factor_vae]
+
+df_melt_vae <- melt(df_err_vae_mat, id.vars = "label",
+                    variable.name = "Feature", value.name = "Error")
+setDT(df_melt_vae)
+df_summary_vae <- df_melt_vae[,
+  .(Mean_Error = mean(Error, na.rm = TRUE)),
+  by = .(Feature, label)]
+
+g_vae_heat <- ggplot(df_summary_vae,
+                     aes(x = Feature, y = label, fill = Mean_Error)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(name  = "Mean Error",
+                      low   = "white", high = COL_DETOUR,
+                      limits = c(0, 1)) + #max(df_summary_vae$Mean_Error, na.rm = TRUE))) +
+  labs(title = paste0("VAE: Error per Feature and Class\nF1-score: ",
+                      round(score_vae$F1_score, 4)),
+       x = "Feature", y = "Class") +
+  theme_ms(10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5))
+
+ggsave(paste0("model_vae_heatmap_", fig_suffix, ".png"), g_vae_heat,
+       device = "png", path = "scratch/figure",
+       width = 3000, height = 1101, units = "px")
+print(g_vae_heat)
+```
+
+<!-- ```{r} -->
+<!-- # ---- VAE Figure 7 : t-SNE original vs reconstruit ---- -->
+<!-- library(Rtsne) -->
+
+<!-- X_all_vae  <- rbind(X_test_vae, X_pred_vae) -->
+<!-- type_vae   <- c(rep("Original",      nrow(X_test_vae)), -->
+<!--                 rep("Reconstructed", nrow(X_pred_vae))) -->
+
+<!-- tsne_vae   <- Rtsne(X_all_vae, dims = 2, perplexity = 30, -->
+<!--                     verbose = FALSE, na.rm = TRUE) -->
+
+<!-- df_tsne_vae <- data.table( -->
+<!--   x    = tsne_vae$Y[, 1], -->
+<!--   y    = tsne_vae$Y[, 2], -->
+<!--   type = factor(type_vae, levels = c("Original","Reconstructed")) -->
+<!-- ) -->
+
+<!-- g_vae_tsne <- ggplot(df_tsne_vae, aes(x = x, y = y, color = type, shape = type)) + -->
+<!--   geom_point(size = 1.5, alpha = 0.5) + -->
+<!--   scale_color_manual(name   = "Type", -->
+<!--                      values = c("Original"      = COL_DIRECT, -->
+<!--                                 "Reconstructed" = COL_DETOUR)) + -->
+<!--   scale_shape_manual(name   = "Type")+ -->
+<!--   labs(title = paste0("VAE — t-SNE original vs reconstructed\nF1-score: ", -->
+<!--                       round(score_vae$F1_score, 4)), -->
+<!--        x = "Dim 1", y = "Dim 2") + -->
+<!--   theme_ms(8) -->
+
+<!-- ggsave(paste0("model_vae_tsne_", fig_suffix, ".png"), g_vae_tsne, -->
+<!--        device = "png", path = "scratch/figure", -->
+<!--        width = 2045, height = 1101, units = "px") -->
+<!-- print(g_vae_tsne) -->
+
+<!-- rm(vae_enc_viz, vae_dec_viz) -->
+<!-- ``` -->
+
+
+# Récapitulatif des F1-scores
+
+```{r scores-recap}
+recap <- rbindlist(list(
+  data.table(modele = m_int$name, approche = "non-supervisé",
+             F1 = score_int$F1_score, Recall = score_int$Recall,
+             Precision = score_int$Precision),
+  data.table(modele = m_thr$name, approche = "non-supervisé",
+             F1 = score_thr$F1_score, Recall = score_thr$Recall,
+             Precision = score_thr$Precision),
+  data.table(modele = m_svm$name, approche = "supervisé",
+             F1 = score_svm$F1_score, Recall = score_svm$Recall,
+             Precision = score_svm$Precision),
+  data.table(modele = m_rl$name,  approche = "supervisé",
+             F1 = score_rl$F1_score,  Recall = score_rl$Recall,
+             Precision = score_rl$Precision),
+  data.table(modele = m_dae$name, approche = "non-supervisé",
+             F1 = score_dae$F1_score, Recall = score_dae$Recall,
+             Precision = score_dae$Precision),
+  data.table(modele = m_vae$name, approche = "non-supervisé",
+             F1 = score_vae$F1_score, Recall = score_vae$Recall,
+             Precision = score_vae$Precision)
+), fill = TRUE)
+
+print(recap[order(-F1)])
+```

@@ -1,0 +1,723 @@
+---
+title: "Feature analysis — synthesis report"
+subtitle: "Detour-attack detection at flow size n = 9"
+author: "Anne"
+date: today
+date-format: "YYYY-MM-DD"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    code-fold: true
+    code-tools: true
+    theme: cosmo
+    number-sections: true
+    fig-width: 10
+    fig-height: 6
+    df-print: paged
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+
+setwd("~/Documents/ns-3.45")
+# ============================================================
+#  USAGE
+#  -----
+#  1. Run feature_analysis.R first → produces a directory like
+#     ./<ipaddr>/_pid<pid>_feature_analysis/ with the CSVs.
+#  2. Set `results_dir` below to that directory (or pass it
+#     via the environment variable FEATURE_RESULTS_DIR).
+#  3. Render :  quarto render feature_analysis_report.qmd
+# ============================================================
+
+# --- Configuration : where are the CSVs? ---
+results_dir <- "scratch/data/" #Sys.getenv("FEATURE_RESULTS_DIR", unset = "")
+if (results_dir == "") {
+  # Fallback : auto-detect under the current working directory.
+  candidates <- list.dirs(".", recursive = TRUE, full.names = TRUE)
+  candidates <- candidates[grepl("_feature_analysis$", candidates)]
+  if (length(candidates) > 0) {
+    # Pick the most recently modified
+    mtimes <- file.info(candidates)$mtime
+    results_dir <- candidates[order(mtimes, decreasing = TRUE)][1]
+  } else {
+    stop("No results directory found. Set FEATURE_RESULTS_DIR or place the report next to the *_feature_analysis/ folder.")
+  }
+}
+
+stopifnot(dir.exists(results_dir))
+
+# --- Libraries ---
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(knitr)
+  library(kableExtra)
+  library(scales)
+})
+
+theme_set(theme_minimal(base_size = 11))
+
+# --- Helpers ---
+read_or_null <- function(name) {
+  fp <- file.path(results_dir, name)
+  if (!file.exists(fp)) return(NULL)
+  fread(fp, sep = ";")
+}
+
+# Try the canonical names produced by feature_analysis.R
+reliability   <- read_or_null("01_reliability_n9.csv")
+discrim       <- read_or_null("02_discrimination.csv")
+clusters      <- read_or_null("03_redundancy_clusters.csv")
+rf_imp        <- read_or_null("03_redundancy_rf_importance.csv")
+mrmr          <- read_or_null("03_redundancy_mrmr.csv")
+robust_perscn <- read_or_null("04_robustness_per_scenario.csv")
+robust_summ   <- read_or_null("04_robustness_summary.csv")
+drift_summ    <- read_or_null("04_drift_summary.csv")
+scorecard     <- read_or_null("05_feature_scorecard.csv")
+# master_flow_dataset.csv is intentionally NOT loaded here — it can be
+# very large (millions of rows) and the synthesis tables don't need it.
+
+# Sanity print - shows up only in dev console
+have <- function(x) !is.null(x) && nrow(x) > 0
+status_tbl <- data.table(
+  artifact = c("reliability", "discrimination", "clusters",
+               "rf_importance", "mrmr", "robustness_per_scenario",
+               "robustness_summary", "drift_summary", "scorecard"),
+  rows = c(
+    if (have(reliability))   nrow(reliability)   else 0L,
+    if (have(discrim))       nrow(discrim)       else 0L,
+    if (have(clusters))      nrow(clusters)      else 0L,
+    if (have(rf_imp))        nrow(rf_imp)        else 0L,
+    if (have(mrmr))           nrow(mrmr)           else 0L,
+    if (have(robust_perscn)) nrow(robust_perscn) else 0L,
+    if (have(robust_summ))   nrow(robust_summ)   else 0L,
+    if (have(drift_summ))    nrow(drift_summ)    else 0L,
+    if (have(scorecard))     nrow(scorecard)     else 0L
+  )
+)
+```
+
+::: {.callout-note collapse="true"}
+## Source data
+
+```{r show-status}
+status_tbl[, status := ifelse(rows > 0, "✓ loaded", "✗ missing")]
+kable(status_tbl, caption = paste0("Files read from `", results_dir, "`"))
+```
+:::
+
+# Executive summary
+
+```{r exec-summary}
+#| results: asis
+
+if (!have(scorecard)) {
+  cat("**No scorecard available.** The synthesis tables below cannot be produced. Re-run `feature_analysis.R` first.\n")
+} else {
+  n_total <- nrow(scorecard)
+  n_with_score <- scorecard[is.finite(global_score), .N]
+  med_score <- scorecard[is.finite(global_score), median(global_score)]
+  q3_score <- scorecard[is.finite(global_score), quantile(global_score, 0.75)]
+  n_top <- scorecard[is.finite(global_score) & global_score >= q3_score, .N]
+  n_clusters <- if (have(clusters)) uniqueN(clusters$cluster_id) else NA_integer_
+  n_reps <- if (have(clusters)) clusters[is_cluster_rep == TRUE, .N] else NA_integer_
+
+  cat(sprintf(
+"- **%d candidate features** evaluated; **%d** have a finite global score.\n",
+    n_total, n_with_score))
+  cat(sprintf(
+"- Median global score: **%.2f**, top quartile threshold: **%.2f** (top %d features).\n",
+    med_score, q3_score, n_top))
+  if (!is.na(n_clusters)) {
+    cat(sprintf(
+"- Redundancy clustering identifies **%d clusters** at |Spearman| > 0.8 → **%d cluster representatives**.\n",
+      n_clusters, n_reps))
+  }
+}
+```
+
+::: {.callout-warning}
+## Read this first
+
+The composite score is a **decision aid**, not the decision itself.
+A high score on six aggregated indicators may still hide a feature that
+is degenerate in a specific scenario or that overlaps strongly with a
+better-ranked sibling. Always cross-check with the per-pillar tables
+below before defending a feature in the manuscript.
+:::
+
+# Pillar 1 — Reliability at flow size 9
+
+The first criterion is whether each candidate is **definable** and
+**stable** when computed over a flow of nine packets. Two diagnostics
+are reported : the fraction of flows on which the feature is `NA`
+(definition rate) and the inter-flow coefficient of variation within
+the benign class, aggregated across scenarios.
+
+```{r p1-table}
+#| eval: !expr "have(reliability)"
+
+p1 <- copy(reliability)
+p1[, na_rate_pct := scales::percent(na_rate, accuracy = 0.1)]
+p1[, cv_str := sprintf("%.2f [%.2f, %.2f]",
+                        cv_median,
+                        cv_q25, cv_q75)]
+p1_view <- p1[, .(feature, na_rate_pct, cv_str, cv_max, n_scen_ok)]
+setnames(p1_view, c("Feature", "NA rate", "CV median [Q1, Q3]",
+                    "CV max", "N scen"))
+setorder(p1_view, -.I)  # keep file order
+kable(p1_view, caption = "Reliability — sorted as in source file (best first).") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 11) |>
+  row_spec(which(p1$na_rate >= 0.5), background = "#fde2e1") |>
+  row_spec(which(p1$cv_median > 1 & is.finite(p1$cv_median)), background = "#fff3cd")
+```
+
+```{r p1-flagged, results='asis'}
+#| eval: !expr "have(reliability)"
+
+flag_na   <- reliability[na_rate >= 0.5, feature]
+flag_cv   <- reliability[is.finite(cv_median) & cv_median > 1 &
+                          !(feature %in% flag_na), feature]
+
+cat("**Features with NA rate ≥ 50 %** — *eliminated by the implicit filter in `mix_to_flow_fast`* :\n\n")
+if (length(flag_na) == 0) {
+  cat("- (none)\n")
+} else {
+  cat(paste0("- `", flag_na, "`\n", collapse = ""))
+}
+
+cat("\n**Features with high inter-flow CV (> 1)** — defined but noisy at n = 9 :\n\n")
+if (length(flag_cv) == 0) {
+  cat("- (none)\n")
+} else {
+  cat(paste0("- `", flag_cv, "`\n", collapse = ""))
+}
+```
+
+```{r p1-plot}
+#| eval: !expr "have(reliability)"
+#| fig-cap: "Reliability map. Top-right region (low NA, low CV) is the safe zone."
+
+ggplot(reliability, aes(x = na_rate, y = pmin(cv_median, 5, na.rm = TRUE))) +
+  geom_point(alpha = 0.7, size = 2.5) +
+  geom_text(aes(label = feature),
+            check_overlap = TRUE, vjust = -0.6, size = 2.5) +
+  geom_vline(xintercept = 0.5, color = "red", linetype = "dashed") +
+  geom_hline(yintercept = 1.0, color = "orange", linetype = "dashed") +
+  labs(x = "NA rate (proportion of flows where the feature is NA)",
+       y = "Inter-flow CV (median across scenarios, capped at 5)",
+       caption = "Red line: NA filter (≥0.5 → dropped). Orange line: CV = 1 threshold.")
+```
+
+::: {.callout-tip collapse="true"}
+## What "low CV" means here
+
+The CV is computed within the **benign class** at each fixed scenario
+and then aggregated. Within a fixed scenario, the benign distribution
+should be tight; a high CV signals that the feature itself injects a
+lot of noise even when nothing is happening on the network. That noise
+will limit any classifier built on top.
+:::
+
+# Pillar 2 — Class separability
+
+For each feature, four marginal indicators of separation between
+benign and detoured flows are computed on the pooled, multi-scenario
+data : univariate AUC, Mann–Whitney p-value, Cliff's δ effect size, and
+mutual information.
+
+```{r p2-table}
+#| eval: !expr "have(discrim)"
+
+p2 <- copy(discrim)
+setorder(p2, -auc_abs)
+p2[, auc_str := sprintf("%.3f", auc_abs)]
+p2[, mw_str := scales::pvalue(mw_p, accuracy = 1e-4)]
+p2[, cliff_str := sprintf("%.3f", cliff_d)]
+p2[, ks_str := sprintf("%.3f", ks_stat)]
+p2[, mi_str := sprintf("%.3f", mi)]
+p2_view <- p2[, .(feature, n_obs, auc_str, mw_str, cliff_str, ks_str, mi_str)]
+setnames(p2_view,
+         c("Feature", "N obs", "|AUC-0.5|+0.5", "MW p-value",
+           "Cliff's δ", "KS stat", "MI"))
+kable(p2_view,
+      caption = "Discrimination indicators — sorted by descending AUC.") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 11)
+```
+
+```{r p2-thresholds, results='asis'}
+#| eval: !expr "have(discrim)"
+
+q_auc_strong <- discrim[is.finite(auc_abs) & auc_abs >= 0.70, feature]
+q_auc_weak   <- discrim[is.finite(auc_abs) & auc_abs <  0.55, feature]
+
+cat("**Strong discriminators (|AUC-0.5|+0.5 ≥ 0.70) :**\n\n")
+if (length(q_auc_strong) == 0) {
+  cat("- (none — feature set is weak in marginal terms)\n")
+} else {
+  cat(paste0("- `", q_auc_strong, "`\n", collapse = ""))
+}
+
+cat("\n**Marginally indistinguishable from noise (|AUC-0.5|+0.5 < 0.55) :**\n\n")
+if (length(q_auc_weak) == 0) {
+  cat("- (none)\n")
+} else {
+  cat(paste0("- `", q_auc_weak, "`\n", collapse = ""))
+}
+```
+
+```{r p2-plot}
+#| eval: !expr "have(discrim)"
+#| fig-cap: "Top-15 features by univariate AUC. Cliff's δ is shown as a colour to flag direction (positive = higher in attacked, negative = lower)."
+
+top15 <- discrim[is.finite(auc_abs)][order(-auc_abs)][1:min(15, .N)]
+ggplot(top15, aes(x = auc_abs, y = reorder(feature, auc_abs),
+                  fill = cliff_d)) +
+  geom_col() +
+  scale_fill_gradient2(low = "#3a86ff", mid = "white", high = "#d62828",
+                        midpoint = 0, name = "Cliff's δ") +
+  geom_vline(xintercept = 0.5, color = "grey50") +
+  geom_vline(xintercept = 0.7, color = "red", linetype = "dashed") +
+  labs(x = "|AUC - 0.5| + 0.5", y = NULL,
+       caption = "Dashed line at 0.7 marks a common 'usable feature' threshold.")
+```
+
+::: {.callout-warning}
+## A high AUC alone is not enough
+
+A feature can have a high pooled AUC because it perfectly separates
+classes in a small subset of scenarios and is uninformative everywhere
+else. Pillar 4 (cross-scenario robustness) is the corrective lens for
+this : compare the per-feature AUC distribution across scenarios in
+section 5 below.
+:::
+
+# Pillar 3 — Non-redundancy
+
+Three complementary views of redundancy are presented : hierarchical
+clustering on Spearman correlation, Random-Forest variable importance,
+and a greedy mRMR ranking.
+
+## Redundancy clusters
+
+```{r p3a-clusters}
+#| eval: !expr "have(clusters)"
+
+clusters_view <- copy(clusters)
+clusters_view[, label := ifelse(is_cluster_rep, paste0("**", feature, "**"), feature)]
+
+# Per cluster, list members with the representative bolded
+cluster_summary <- clusters_view[, .(
+  size = .N,
+  members = paste(label[order(-auc_abs)], collapse = ", "),
+  best_auc = max(auc_abs, na.rm = TRUE)
+), by = cluster_id][order(-size, -best_auc)]
+
+cluster_summary[, best_auc := sprintf("%.3f", best_auc)]
+setnames(cluster_summary,
+         c("Cluster ID", "Size", "Members (rep. in **bold**)", "Best AUC"))
+kable(cluster_summary,
+      caption = "Redundancy clusters at |Spearman| > 0.8. The bolded feature in each row is the cluster representative selected on the basis of best univariate AUC.",
+      escape = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 10)
+```
+
+```{r p3a-singletons, results='asis'}
+#| eval: !expr "have(clusters)"
+
+n_singleton <- clusters[, .N, by = cluster_id][N == 1, .N]
+n_total_cl <- uniqueN(clusters$cluster_id)
+cat(sprintf(
+"Among %d clusters, **%d are singletons** (= features with no near-duplicate). The %d non-singleton clusters concentrate the redundancy of the candidate set.\n",
+  n_total_cl, n_singleton, n_total_cl - n_singleton))
+```
+
+## Random-Forest importance
+
+```{r p3b-rf}
+#| eval: !expr "have(rf_imp)"
+
+rf_view <- copy(rf_imp)
+setorder(rf_view, -MeanDecreaseGini)
+rf_top <- rf_view[1:min(20, .N)]
+ggplot(rf_top, aes(x = MeanDecreaseGini, y = reorder(feature, MeanDecreaseGini))) +
+  geom_col(fill = "#06a77d") +
+  labs(x = "Mean Decrease in Gini", y = NULL,
+       title = "Top 20 features by Random-Forest variable importance")
+```
+
+```{r p3b-cross}
+#| eval: !expr "have(rf_imp) && have(discrim)"
+
+# Compare RF importance vs univariate AUC
+cmp <- merge(rf_imp[, .(feature, MeanDecreaseGini)],
+             discrim[, .(feature, auc_abs)], by = "feature")
+ggplot(cmp, aes(x = auc_abs, y = MeanDecreaseGini, label = feature)) +
+  geom_point(alpha = 0.6) +
+  geom_text(check_overlap = TRUE, size = 2.5, vjust = -0.6) +
+  labs(x = "|AUC - 0.5| + 0.5  (univariate)",
+       y = "Mean Decrease Gini  (multivariate)",
+       title = "Univariate vs multivariate informativeness",
+       caption = "Top-right = strong both ways. Bottom-right = univariately strong, redundant in RF. Top-left = weak alone but useful in interaction.")
+```
+
+## mRMR greedy ranking
+
+```{r p3c-mrmr}
+#| eval: !expr "have(mrmr)"
+
+mrmr_view <- copy(mrmr)
+mrmr_view[, score := sprintf("%.3f", score)]
+mrmr_view[, mi_y  := sprintf("%.3f", mi_y)]
+mrmr_view[, mean_redundancy := sprintf("%.3f", mean_redundancy)]
+setnames(mrmr_view,
+         c("Rank", "Feature", "mRMR score", "MI(f, y)", "Mean redundancy"))
+kable(mrmr_view,
+      caption = "mRMR greedy ranking — higher rank = added latest = lower marginal contribution.") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 11)
+```
+
+::: {.callout-tip collapse="true"}
+## How to read the three views together
+
+A feature that is :
+
+- a **cluster representative** AND
+- in the **RF top-15** AND
+- in the **mRMR top-15**
+
+is a strong candidate for retention. A feature that fails any one of the
+three deserves a closer look : it may be useful in interaction (RF picks
+it but mRMR doesn't, because mRMR uses marginal MI), or it may be a
+redundant sibling of a slightly better feature (cluster non-rep but high
+RF importance).
+:::
+
+# Pillar 4 — Cross-scenario robustness
+
+The discrimination obtained on pooled data may collapse outside the
+parameter region in which it was measured. Below we report, for each
+feature : the median AUC across scenarios, the relative variability of
+that AUC, and the fraction of scenarios where AUC ≥ 0.7.
+
+## Per-feature summary
+
+```{r p4-summary}
+#| eval: !expr "have(robust_summ)"
+
+robust_view <- copy(robust_summ)
+setorder(robust_view, -auc_dist_median)
+robust_view[, auc_med_str := sprintf("%.3f", auc_median)]
+robust_view[, auc_dist_str := sprintf("%.3f", auc_dist_median)]
+robust_view[, cv_str := sprintf("%.2f",
+                                  ifelse(is.finite(auc_dist_cv),
+                                         auc_dist_cv, NA))]
+robust_view[, frac_str := scales::percent(frac_auc_ge_07, accuracy = 1)]
+robust_view_show <- robust_view[, .(feature, n_scen, auc_med_str,
+                                     auc_dist_str, cv_str, frac_str)]
+setnames(robust_view_show,
+         c("Feature", "N scen", "AUC median", "|AUC-0.5| median",
+           "CV(|AUC-0.5|)", "Frac. AUC ≥ 0.7"))
+kable(robust_view_show,
+      caption = "Cross-scenario AUC summary — sorted by descending median |AUC-0.5|.") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 11)
+```
+
+## Per-scenario heatmap (top features)
+
+```{r p4-heatmap}
+#| eval: !expr "have(robust_perscn) && have(discrim)"
+#| fig-height: 8
+
+# Restrict to the 25 best pooled-AUC features for legibility
+top25_feats <- discrim[is.finite(auc_abs)][order(-auc_abs)][1:min(25, .N), feature]
+hm <- robust_perscn[feature %in% top25_feats]
+hm[, feature := factor(feature, levels = top25_feats)]
+
+ggplot(hm, aes(x = scenario_id, y = feature, fill = auc_scen)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_gradient2(low = "#3a86ff", mid = "white", high = "#d62828",
+                        midpoint = 0.5, limits = c(0, 1),
+                        na.value = "grey85", name = "AUC") +
+  labs(x = "Scenario", y = NULL,
+       title = "Per-scenario AUC for the 25 best pooled features",
+       caption = "Grey cells = AUC undefined (not enough data). Blue/red asymmetry around 0.5 reveals scenarios where the feature inverts its discriminative direction.") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 7))
+```
+
+## Distributional drift vs baseline
+
+```{r p4-drift}
+#| eval: !expr "have(drift_summ)"
+
+drift_view <- copy(drift_summ)
+setorder(drift_view, -drift_median)
+drift_view[, drift_med_str := sprintf("%.3f", drift_median)]
+drift_view[, drift_max_str := sprintf("%.3f", drift_max)]
+drift_view_show <- drift_view[, .(feature, drift_med_str, drift_max_str)]
+setnames(drift_view_show,
+         c("Feature", "Drift median", "Drift max"))
+
+# Show top 10 drift only
+kable(drift_view_show[1:min(10, .N)],
+      caption = "10 features with the largest distributional drift between baseline and other scenarios. High drift = the feature's distribution moves a lot when network parameters change.") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 11)
+```
+
+::: {.callout-important}
+## Drift is double-edged
+
+A high drift on a discriminative feature means the **decision boundary
+moves with the scenario**. Two consequences :
+
+- if the model is trained on one regime and deployed on another (the
+  *evolution* mode in your pipeline), it will likely fail on this
+  feature unless retraining is triggered;
+- in supervised mode, drift correlates with leakage of the
+  parasite-rate / hop / detour parameters into the feature itself,
+  which is fine for in-distribution accuracy but inflates the apparent
+  performance.
+:::
+
+# Composite scorecard
+
+```{r scorecard-top}
+#| eval: !expr "have(scorecard)"
+
+sc <- copy(scorecard)
+setorder(sc, -global_score)
+
+# Top 25 view
+sc_view <- sc[1:min(25, .N)]
+fmt2 <- function(x) ifelse(is.finite(x), sprintf("%.2f", x), "—")
+sc_view[, `:=`(
+  rel  = fmt2(rel_score),
+  cv   = fmt2(cv_score),
+  disc = fmt2(disc_score),
+  rf   = fmt2(rf_score),
+  rob  = fmt2(rob_score),
+  drift = fmt2(drift_score),
+  global = fmt2(global_score)
+)]
+
+sc_show <- sc_view[, .(feature, rel, cv, disc, rf, rob, drift, global,
+                        cluster_id, is_cluster_rep)]
+setnames(sc_show,
+         c("Feature", "Reliability", "CV-stability", "Discrimination",
+           "RF importance", "Robustness", "Drift", "Global",
+           "Cluster", "Rep ?"))
+
+kable(sc_show,
+      caption = "Top 25 features by composite global score.") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 10) |>
+  row_spec(which(sc_view$is_cluster_rep), background = "#e8f5e8")
+```
+
+```{r scorecard-distrib}
+#| eval: !expr "have(scorecard)"
+#| fig-cap: "Distribution of the global score over all candidates."
+
+ggplot(scorecard[is.finite(global_score)],
+       aes(x = global_score)) +
+  geom_histogram(bins = 30, fill = "#3a86ff", alpha = 0.7,
+                  color = "white") +
+  geom_vline(xintercept = quantile(scorecard$global_score, 0.75,
+                                   na.rm = TRUE),
+              color = "red", linetype = "dashed") +
+  labs(x = "Global score", y = "Count",
+       caption = "Red line = top quartile threshold.")
+```
+
+# Recommended retention list
+
+The following synthesis is automatically derived from the four pillars
+and the redundancy clusters. **It is a proposal, not a final list :
+review each line before committing it to the manuscript.**
+
+```{r retention-rule}
+#| eval: !expr "have(scorecard)"
+
+# Decision rule (explicit and conservative) :
+#   RETAIN if :
+#     - is_cluster_rep == TRUE     (no near-duplicate ranks higher)
+#     - na_rate < 0.5              (definable on most flows at n=9)
+#     - cv_median < 1.5            (sampling noise under control)
+#     - disc_score >= 0.10         (i.e. |AUC-0.5| >= 0.05 — minimal)
+#     - rob_score >= 0.30          (works in at least 30 % of scen.)
+#     - global_score >= median     (above-median composite)
+#
+#   FLAG (review) if :
+#     - is_cluster_rep == FALSE but rf_score >= 0.50  (interaction)
+#     - high disc but high drift (scenario-specific)
+#
+#   DROP otherwise.
+
+med_global <- scorecard[is.finite(global_score), median(global_score)]
+
+# scorecard already contains na_rate, cv_median, auc_abs, etc.
+# (cf. feature_analysis.R lines 583-599). No merge needed.
+ret <- copy(scorecard)
+
+ret[, decision := fcase(
+  is_cluster_rep == TRUE
+    & is.finite(na_rate) & na_rate < 0.5
+    & is.finite(cv_median) & cv_median < 1.5
+    & is.finite(disc_score) & disc_score >= 0.10
+    & is.finite(rob_score) & rob_score >= 0.30
+    & is.finite(global_score) & global_score >= med_global,
+  "RETAIN",
+  is.finite(rf_score) & rf_score >= 0.50,
+  "REVIEW (interaction)",
+  is.finite(disc_score) & is.finite(drift_score) & disc_score >= 0.30 & drift_score < 0.30,
+  "REVIEW (drift)",
+  default = "DROP"
+)]
+
+setorder(ret, decision, -global_score)
+ret_show <- ret[, .(feature, decision, global_score, cluster_id,
+                     is_cluster_rep, na_rate, cv_median,
+                     auc_abs, rob_score, drift_score)]
+ret_show[, `:=`(
+  global_score = sprintf("%.2f", global_score),
+  na_rate = scales::percent(na_rate, accuracy = 0.1),
+  cv_median = sprintf("%.2f", cv_median),
+  auc_abs = sprintf("%.3f", auc_abs),
+  rob_score = sprintf("%.2f", rob_score),
+  drift_score = sprintf("%.2f", drift_score)
+)]
+setnames(ret_show,
+         c("Feature", "Decision", "Score", "Cluster", "Rep ?",
+           "NA rate", "CV median", "AUC", "Robustness", "Drift score"))
+
+kable(ret_show, caption = "Retention proposal. Adjust thresholds in the chunk above to align with your manuscript's selection criteria.") |>
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, font_size = 10) |>
+  row_spec(which(ret$decision == "RETAIN"), background = "#d4edda") |>
+  row_spec(which(grepl("REVIEW", ret$decision)), background = "#fff3cd") |>
+  row_spec(which(ret$decision == "DROP"), background = "#fde2e1")
+```
+
+```{r retention-summary, results='asis'}
+#| eval: !expr "have(scorecard)"
+
+cnt <- ret[, .N, by = decision]
+cat("**Decision counts :**\n\n")
+for (i in seq_len(nrow(cnt))) {
+  cat(sprintf("- %s : **%d**\n", cnt$decision[i], cnt$N[i]))
+}
+```
+
+::: {.callout-warning}
+## Decision rule transparency
+
+The decision rule used to fill the *Decision* column is **explicit and
+visible in the source of this report** (`retention-rule` chunk). Modify
+the thresholds in that chunk if your manuscript uses different ones,
+then re-render. Do **not** copy the table into the manuscript without
+re-reading the rule alongside it.
+:::
+
+# Cross-checks against the manuscript's current Table 3.1
+
+The current Section 3.2 of the manuscript declares a feature set used
+by REG_LOG, SVM, VAE and DAE. The following table flags the features
+that the present analysis would mark as problematic at flow size 9.
+
+```{r manuscript-crosscheck, results='asis'}
+#| eval: !expr "have(reliability) && have(robust_summ)"
+
+# Features declared in Table 3.1 of the manuscript (for n = 9 review)
+table31_features <- c(
+  "fmedian_delay", "fmad_delay", "fIQR_delay", "fCV_delay",
+  "fQ095_delay", "fQ095_Q005", "fmeanTRIM10_delay",
+  "fMASD_delay", "fRMSJ_delay", "fsd_diff_delay",
+  "fIPDV_pos_delay", "fIPDV_neg_delay",
+  paste0("facf_lag", 0:10), "fACF_sum",
+  "fslope_t", "fCUSUM_max", "fearly_diff",
+  "alpha_hat", "beta_hat", "r2", "sigma_eps",
+  "rho_tilde", "lambda_hat",
+  "fkurtosis_delay", "fskew_delay", "fhill",
+  "delay", "flow_size",
+  "fmean_delay", "t_start", "t_end",
+  "duty", "run_max",
+  "d_alpha", "d_masd", "d_cv", "d_beta",
+  "fsd_delay", "fQ005_delay", "fmin_delay", "fmax_delay",
+  "fSpec_peak_freq", "fSpec_entropy"
+)
+
+flag_dt <- merge(
+  data.table(feature = table31_features),
+  reliability[, .(feature, na_rate, cv_median)],
+  by = "feature", all.x = TRUE
+)
+if (have(robust_summ)) {
+  flag_dt <- merge(flag_dt,
+                    robust_summ[, .(feature, frac_auc_ge_07)],
+                    by = "feature", all.x = TRUE)
+} else {
+  flag_dt[, frac_auc_ge_07 := NA_real_]
+}
+
+flag_dt[, manuscript_status := fcase(
+  is.na(na_rate),
+  "❌ NOT IN OUTPUT (check feature name)",
+  na_rate >= 0.5,
+  "❌ NA-eliminated at n = 9",
+  is.finite(cv_median) & cv_median > 2,
+  "⚠ very noisy at n = 9",
+  is.finite(frac_auc_ge_07) & frac_auc_ge_07 < 0.1,
+  "⚠ rarely useful across scenarios",
+  default = "✓ ok"
+)]
+
+problems <- flag_dt[manuscript_status != "✓ ok"]
+if (nrow(problems) == 0) {
+  cat("\n✅ All features declared in Table 3.1 pass the basic sanity checks at n = 9. No correction required.\n")
+} else {
+  problems[, na_rate_str := scales::percent(na_rate, accuracy = 0.1)]
+  problems[, cv_str := sprintf("%.2f", cv_median)]
+  problems[, frac_str := scales::percent(frac_auc_ge_07, accuracy = 1)]
+  problems_show <- problems[, .(feature, manuscript_status,
+                                 na_rate_str, cv_str, frac_str)]
+  setnames(problems_show,
+           c("Feature in Table 3.1", "Status", "NA rate",
+             "CV median", "Frac AUC ≥ 0.7"))
+  print(kable(problems_show,
+              caption = "Features in the manuscript's Table 3.1 that fail one of the n=9 sanity checks.") |>
+        kable_styling(bootstrap_options = c("striped", "hover"),
+                      full_width = FALSE, font_size = 11))
+}
+```
+
+# Reproducibility
+
+```{r repro}
+#| results: asis
+
+cat("- **Results directory :** `", results_dir, "`\n", sep = "")
+cat("- **Quarto file :** ", knitr::current_input(dir = TRUE), "\n", sep = "")
+cat("- **Rendered on :** ", format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"), "\n", sep = "")
+cat("- **R version :** ", R.version.string, "\n", sep = "")
+```
+
+```{r session-info}
+#| code-fold: true
+
+sessionInfo()
+```
