@@ -152,20 +152,22 @@ The R scripts themselves live in **`scratch/ninth/`**, regardless of which scena
 
 Main parameters (common to both scripts):
 
-| Tag  | Long name         | Default         | Description                                   |
-|------|-------------------|-----------------|-------------------------------------------|
-| `-r` | `repertory`       | `scratch/ninth` | Data folder to process (the real path, e.g. `scratch/eleventh/<date>`) |
-| `-n` | `name`            | `path`          | Axis: `detour`, `path`, or `parasite` |
-| `-e` | `evolution`       | `FALSE`         | `TRUE` for the variable parasite-rate regime |
-| `-i` | `trainonparasite` | `60Mbps`        | Training parasite rate |
-| `-d` | `trainondetour`   | `0`             | Training detour length(s) |
-| `-p` | `trainonpath`     | `0`             | Training path length |
-| `-c` | `comment`         | `""`            | `basic` / `same_size_dataset` |
-| `-g` | `graph`           | `FALSE`         | Generate PDF plots |
-| `-q` | `do_queue`        | `FALSE`         | Include queue diagnostics |
+| Tag  | Long name                  | Default         | Description                                   |
+|------|----------------------------|-----------------|-------------------------------------------|
+| `-r` | `repertory`                | `scratch/ninth` | Data folder to process (the real path, e.g. `scratch/eleventh/<date>`) |
+| `-n` | `name`                     | `path`          | Axis: `detour`, `path`, or `parasite` |
+| `-e` | `evolution`                | `FALSE`         | `TRUE` for the variable parasite-rate regime |
+| `-i` | `trainonparasite`          | `60Mbps`        | Training parasite rate |
+| `-d` | `trainondetour`            | `0`             | Training detour length(s) |
+| `-p` | `trainonpath`              | `0`             | Training path length |
+| `-c` | `comment`                  | `""`            | `basic` / `same_size_dataset` |
+| `-g` | `graph`                    | `FALSE`         | Generate PDF plots |
+| `-q` | `do_queue`                 | `FALSE`         | Include queue diagnostics |
+|  _   |`--use_temporal_covariates` | `TRUE`          | Cut of the covariables (TRUE  = current execution (t_start and t_end preserved), FALSE = cut)  |
+|  _   |`--trainRepertories`        |  *(empty)*      | Comma-separated training runs; activates cross-seed mode |
+|  _   |`--reducedFeatures`         |  *(empty)*      | Reduced the feature set with the joint file .rds |
 
-> ℹ️ Older scripts (`global_R.sh`, `generation_all_R.sh`, `generation_all_R_full.sh`, `generation_ondetour_R.sh`, `generation_ondetourevolution_R.sh`) still exist in the repository and reference outdated R scripts (`generation.R`, `generation_ondetour.R` instead of `generation_unified.R`) under `scratch/ninth`/`scratch/tenth`. **They no longer match the current workflow** (superseded by `gen_commande_optimized.py` + `generation_explicite.sh`) — ignore them or remove them from the repository to avoid future confusion.
-
+> ℹ️ Older scripts (`global_R.sh`, `generation_all_R.sh`, `generation_all_R_full.sh`, `generation_ondetour_R.sh`, `generation_ondetourevolution_R.sh`) still exist in the repository and reference outdated R scripts (`generation.R`, `generation_ondetour.R` instead of `generation_unified.R`) under `scratch/ninth`/`scratch/tenth`. **They no longer match the current workflow** (superseded by `gen_commande_optimized.py` + `generation_explicite.sh`)
 ---
 
 ## 4. Gather the analysis results
@@ -182,9 +184,77 @@ Aggregates the results of the different runs (scenarios × seeds × axes × mode
 
 Once results are aggregated, the manuscript's figures and tables are produced by:
 
-- **`feature_analysis_section32.R`** — analysis of the 42 candidate features (§3.2: separability, redundancy, robustness, dendrogram).
-- **`plot_model_prediction_3.qmd`** — illustrative figures of model behaviour (§3.4: SVM/REGLOG/baseline decisions, t-SNE and DAE/VAE heatmaps).
-- **`analysis_flow.qmd`** — quantitative results figures (§3.5: parasite rate influence, path/detour length, generic models, flow size). *(Large file that also contains many abandoned exploration blocks — only the blocks after `## isolation forest` for data loading, and from `# graphe en fonction du flux parasite` up to (excluding) `# specific for poster` for the plots, correspond to the figures actually published.)*
+- **`feature_analysis_section32_2.R`** : analysis of the candidate features (§3.2: reliability, separability, redundancy, robustness, dendrogram, family comparison). Operates on the **51 features** actually supplied to the models, after removal of degenerate columns and of the four `d_*` deviations. Writes the LaTeX macros (`\nbfeature`, `\NREL`, `\NSEP`, `\NUNIQ`, `\NROB`, `\KFAM`, `\SILFAM`) consumed by the manuscript, plus `feature_degeneracy.tex`, `feature_catalog_extra.tex` and `feature_classification_analysis.tex`.
+- **`feature_reduction_4.R`** : cuts the dendrogram at several values of `k`, selects one representative per group (highest univariate AUC), and writes `reduced_features_k*.rds` plus `feature_reduction_table.tex` (Appendix A).
+- **`table_summary_perf.R`** : aggregates the results into the manuscript's performance tables (per-model summary, flow size, ablation, feature reduction, cross-seed).
+- **`plot_model_prediction_3.qmd`** : illustrative figures of model behaviour (§3.4).
+- **`analysis_flow.qmd`** : quantitative results figures (§3.5). *(Large file that also contains many abandoned exploration blocks — only the blocks after `## isolation forest` for data loading, and from  `# graphe en fonction du flux parasite` up to (excluding) `# specific for poster` for the plots, correspond to the figures actually published.)*
+- **`plot_model_prediction_3.qmd`** : illustrative figures of model behaviour (§3.4: SVM/REGLOG/baseline decisions, t-SNE and DAE/VAE heatmaps).
+- **`analysis_flow.qmd`** : quantitative results figures (§3.5: parasite rate influence, path/detour length, generic models, flow size). *(Large file that also contains many abandoned exploration blocks — only the blocks after `## isolation forest` for data loading, and from `# graphe en fonction du flux parasite` up to (excluding) `# specific for poster` for the plots, correspond to the figures actually published.)*
+
+---
+
+## 6. Methodological validation experiments
+
+Three experiments assess the evaluation protocol itself rather than the detectors. All three run on the reference scenario (path length 4, one on-detour router, 120 Mbps, 9-packet flows) and are compared over the seeds present in both variants.
+
+### 6.1 Ablation of the temporal covariates
+
+Checks that the models do not exploit `t_start` and `t_end` as a temporal shortcut.
+Controlled by an argument passed in the command line `--use_temporal_covariates FALSE` or as a global flag in `setup_param.R`:
+
+```r
+use_temporal_covariates <- TRUE    # TRUE = current behaviour, FALSE = ablation
+```
+
+`do_svm()`, `do_dae()` and `do_vae()` remove the two variables with `setdiff()` when the flag is `FALSE`. 
+`do_reg_log()` adds them instead, so that both conditions are covered for a model that excludes them by construction. The variant is recorded in the output through the `temporal_cov` column.
+
+Run the same command twice, once per value of the flag, over all seeds, then aggregate with the ablation block of `table_summary_perf.R`.
+
+
+### 6.2 Feature-set reduction
+
+Measures whether a reduced feature set preserves detection performance.
+
+1. Run `feature_reduction_4.R` to produce `reduced_features_k*.rds`.
+2. Load the chosen set in `setup_param.R`:
+   ```r
+   reduced_feature_set <- readRDS(".../feature_reduction/reduced_features_k11.rds")
+   ```
+   `NULL` restores the full set.
+OR
+2. Pass the reduce_feature file as an argument of the generation_unified.R command line: --reducedFeatures path/to/the/feature_readuced_k<k>.rds
+3. Re-run the reference scenario for each set, then aggregate.
+
+Each model intersects its own feature list with `reduced_feature_set`. The two threshold baselines are unaffected, since they only use the mean flow delay, which makes them a consistency check: their scores must be identical across all columns of the table.
+
+### 6.3 Cross-seed evaluation
+
+Measures generalisation to a run never seen during training, instead of the within-run 70/30 temporal split.
+
+Both `generation_unified.R` and `generation_ondetour_evolution.R` accept:
+
+```
+--trainRepertories <dir1>,<dir2>,...
+```
+
+The directory given by `-r` is the test run; those listed in `--trainRepertories` supply the training flows. A leave-one-run-out sweep runs the command once per run, each in turn playing the role of the test set. 
+Example:
+
+```bash
+Rscript scratch/ninth/generation_unified.R \
+  -t 60 -l 5ms -b 120Mbps -a 10Mbps -o 12000 -m 0.5 -x 0.5 -i 120Mbps \
+  -p 0 -g TRUE -q FALSE -n detour -e TRUE -d 0_1_3_5_7_9 -c basic \
+  -r scratch/eleventh/<run_test> \
+  --trainRepertories scratch/eleventh/<run1>,scratch/eleventh/<run2>,...
+```
+
+The command files `commande_crossseed_eleventh_evolution.txt` and `commande_crossseed_twelveth_evolution.txt` contain the full sweeps for the constant-rate and variable-rate scenarios.
+
+Internally, `run_id` is attached to each flow and carried through to `partition()`, which splits on it instead of applying the temporal split. `run_id` must remain in the `remove_col*` lists of `setup_param.R` so that it never becomes a model input. The `cross_seed` column records the variant in the output.
+
+> Note: the two protocols differ in the relation between training and test flows **and** in the size of the training set, since leave-one-run-out trains on several complete runs whereas the temporal split trains on 70% of a single one. See §3.5 of the manuscript.
 
 ---
 
