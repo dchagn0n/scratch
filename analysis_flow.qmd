@@ -380,12 +380,21 @@ dtf_27 <- fread ("scratch/data/final_data_192.168.186.24_20260730_185158.csv")
 dtf_27$dataset = "dtf_27"
 dtf_27[comment == "basic2", comment := "basic"]
 # 
+
+dtf_28 <- fread ("scratch/data/final_data_192.168.186.24_20261012_135404.csv")
+dtf_28$dataset = "dtf_28"
+
+dtf_16 <- dtf_16[model %in% c("INTERVAL_DELAY", "REGLOG", "THRESHOLD"),]
+dtf_25 <- dtf_25[model %in% c("INTERVAL_DELAY", "REGLOG", "THRESHOLD"),]
+dtf_27 <- dtf_27[model %in% c("INTERVAL_DELAY", "REGLOG", "THRESHOLD"),]
+
 dtf_tmp <- rbind(#dtf_15, dtf_19, dtf_17, dtf_18, 
-                 #dtf_20, dtf_21, dtf_22, dtf_23, dtf_24, 
-                 dtf_25, 
-                 dtf_16
-                 #,dtf_26
-                 , dtf_27) #, dtf_17 dtf_18 #
+                  #dtf_20, dtf_21, dtf_22, dtf_23, dtf_24, 
+                  dtf_25, 
+                  dtf_16
+                  #,dtf_26
+                  , dtf_27
+                 , dtf_28) #, dtf_17 dtf_18 #
 rm(dtf_15, dtf_19, dtf_17, dtf_18, dtf_20, dtf_21, dtf_22, dtf_23, dtf_24)
 gc()
 dtf_16 <- dtf_tmp
@@ -776,7 +785,9 @@ str(dtf_flow)
 #dtf_flow_boxplot[, fpr := FP / (FP + TN)]
 
 tmp <- dtf_flow_boxplot[
-  path_length == 0 & nb_detour == 0 & parasite_rate == "120Mbps" & size_group == 9 & trainondetour == 0 & do_evolution == FALSE & directory == "eleventh",]
+  path_length == 0 & nb_detour == 0 & parasite_rate == "120Mbps" & size_group == 9 
+  & trainondetour == 0 & do_evolution == FALSE & directory == "eleventh" 
+  & feature_set == "full"& temporal_cov == TRUE,]
 recap_fpr <- dtf_flow_boxplot[
   path_length == 0 & nb_detour == 0 & parasite_rate == "120Mbps" 
   & size_group == 9 & trainondetour == 0 & do_evolution == FALSE 
@@ -2393,7 +2404,9 @@ plot_flow <- dtf_flow_boxplot[group_id == group
                       & do_evolution == F
                       & directory == "eleventh" #"ninth"
                       & comment == "basic"
-                      #& ( dataset == "dtf_16")
+                      & feature_set == "full"
+                      & temporal_cov == TRUE
+                      #& ( dataset == "dtf_28")
                       ]
 #plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
 
@@ -2487,6 +2500,82 @@ ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = 
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
+
+
+
+mean(plot_flow[(model == "VAE" | model == "DAE") 
+               & (parasite_rate == "1Mbps" |
+                  parasite_rate == "10Mbps" |
+                  parasite_rate == "20Mbps" |
+                  parasite_rate == "30Mbps" |
+                  parasite_rate == "40Mbps" |
+                  parasite_rate == "50Mbps" |
+                  parasite_rate == "60Mbps" ),Recall], na.rm = TRUE)
+
+mean(plot_flow[(model == "VAE" | model == "DAE") 
+               & (parasite_rate == "1Mbps" |
+                  parasite_rate == "10Mbps" |
+                  parasite_rate == "20Mbps" |
+                  parasite_rate == "30Mbps" |
+                  parasite_rate == "40Mbps" |
+                  parasite_rate == "50Mbps" |
+                  parasite_rate == "60Mbps" ),Precision], na.rm = TRUE)
+
+
+mean(plot_flow[(model == "THRESHOLD") 
+               & (parasite_rate == "130Mbps" |
+                  parasite_rate == "140Mbps" |
+                  parasite_rate == "150Mbps" |
+                  parasite_rate == "160Mbps" |
+                  parasite_rate == "170Mbps"|
+                  parasite_rate == "180Mbps"|
+                  parasite_rate == "190Mbps"|
+                  parasite_rate == "200Mbps"|
+                  parasite_rate == "210Mbps"|
+                  parasite_rate == "220Mbps"|
+                  parasite_rate == "230Mbps"|
+                  parasite_rate == "240Mbps"),Recall], na.rm = TRUE)
+mean(plot_flow[(model == "THRESHOLD") 
+               & (parasite_rate == "130Mbps" |
+                  parasite_rate == "140Mbps" |
+                  parasite_rate == "150Mbps" |
+                  parasite_rate == "160Mbps" |
+                  parasite_rate == "170Mbps"|
+                  parasite_rate == "180Mbps"|
+                  parasite_rate == "190Mbps"|
+                  parasite_rate == "200Mbps"|
+                  parasite_rate == "210Mbps"|
+                  parasite_rate == "220Mbps"|
+                  parasite_rate == "230Mbps"|
+                  parasite_rate == "240Mbps"),Precision], na.rm = TRUE)
+
+mean(plot_flow[(model == "INTERVAL_DELAY") 
+               & (parasite_rate == "130Mbps" |
+                  parasite_rate == "140Mbps" |
+                  parasite_rate == "150Mbps" |
+                  parasite_rate == "160Mbps" |
+                  parasite_rate == "170Mbps"|
+                  parasite_rate == "180Mbps"|
+                  parasite_rate == "190Mbps"|
+                  parasite_rate == "200Mbps"|
+                  parasite_rate == "210Mbps"|
+                  parasite_rate == "220Mbps"|
+                  parasite_rate == "230Mbps"|
+                  parasite_rate == "240Mbps"),Recall], na.rm = TRUE)
+mean(plot_flow[(model == "INTERVAL_DELAY") 
+               & (parasite_rate == "130Mbps" |
+                  parasite_rate == "140Mbps" |
+                  parasite_rate == "150Mbps" |
+                  parasite_rate == "160Mbps" |
+                  parasite_rate == "170Mbps"|
+                  parasite_rate == "180Mbps"|
+                  parasite_rate == "190Mbps"|
+                  parasite_rate == "200Mbps"|
+                  parasite_rate == "210Mbps"|
+                  parasite_rate == "220Mbps"|
+                  parasite_rate == "230Mbps"|
+                  parasite_rate == "240Mbps"),Precision], na.rm = TRUE)
 ```
 
 
@@ -2502,7 +2591,7 @@ x= "parasite_rate"
 y = "F1_score"
 #z = "nb_detour"
 colvar = "approach"
-group = 342#9,27,342
+group = 27#9,27,342
 my_model = "ISOF"
 p_att = 0.1
 detour = "0_1_3_5_7_9"#"0_1_3_5_7_9"
@@ -2622,6 +2711,62 @@ ggplot(plot_flow, aes(x = parasite_rate, y = F1_score, color= approach, shape = 
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
+length(unique(plot_flow[model == "REGLOG",seed]))
+
+min(plot_flow[(model == "SVM") 
+               & (parasite_rate == "1Mbps" |
+                  parasite_rate == "10Mbps" |
+                  parasite_rate == "20Mbps" |
+                  parasite_rate == "30Mbps" |
+                  parasite_rate == "40Mbps" |
+                  parasite_rate == "50Mbps" |
+                  parasite_rate == "60Mbps" |
+                  parasite_rate == "130Mbps" |
+                  parasite_rate == "140Mbps" |
+                  parasite_rate == "150Mbps" |
+                  parasite_rate == "160Mbps" |
+                  parasite_rate == "170Mbps"|
+                  parasite_rate == "180Mbps"|
+                  parasite_rate == "190Mbps"|
+                  parasite_rate == "200Mbps"|
+                  parasite_rate == "210Mbps"|
+                  parasite_rate == "220Mbps"|
+                  parasite_rate == "230Mbps"|
+                  parasite_rate == "240Mbps"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "VAE") 
+               & (parasite_rate == "1Mbps" |
+                  parasite_rate == "10Mbps" |
+                  parasite_rate == "20Mbps" |
+                  parasite_rate == "30Mbps" |
+                  parasite_rate == "40Mbps" |
+                  parasite_rate == "50Mbps" |
+                  parasite_rate == "60Mbps" |
+                  parasite_rate == "130Mbps" |
+                  parasite_rate == "140Mbps" |
+                  parasite_rate == "150Mbps" |
+                  parasite_rate == "160Mbps" |
+                  parasite_rate == "170Mbps"|
+                  parasite_rate == "180Mbps"|
+                  parasite_rate == "190Mbps"|
+                  parasite_rate == "200Mbps"|
+                  parasite_rate == "210Mbps"|
+                  parasite_rate == "220Mbps"|
+                  parasite_rate == "230Mbps"|
+                  parasite_rate == "240Mbps"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "DAE") 
+               & (parasite_rate == "70Mbps" |
+                  parasite_rate == "80Mbps" |
+                  parasite_rate == "90Mbps" |
+                  parasite_rate == "100Mbps" |
+                  parasite_rate == "1100Mbps" |
+                  parasite_rate == "120Mbps" ),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "VAE") ,F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "DAE") ,F1_score], na.rm = TRUE)
+
 ```
 
 
@@ -2932,7 +3077,10 @@ plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att
                       &do_evolution == F
                       & directory == "eleventh" #"ninth"
                       & (comment == "basic" | comment == "basic2")
-                      #& dataset == "dtf_16"
+                      
+                      & feature_set == "full"
+                      & temporal_cov == TRUE
+                      #& dataset == "dtf_28"
                       ]
 plot_flow$nb_detour = as.numeric(plot_flow$nb_detour)
 plot_flow$path_length = as.factor(plot_flow$path_length)
@@ -3029,6 +3177,7 @@ ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = ap
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
 ```
 
 
@@ -3046,7 +3195,7 @@ x= "path_length"
 y = "F1_score"
 #z = "nb_detour"
 colvar = "approach"
-group = 9 #9,27,342
+group = 9#9,27,342
 my_model = "ISOF"
 p_att = 0.1
 detour = "0_1_3_5_7_9"
@@ -3169,6 +3318,11 @@ ggplot(plot_flow, aes(x = path_length, y = F1_score, color= approach, shape = ap
   panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
+length(unique(plot_flow[model == "SVM",seed]))
+
+mean(plot_flow[(model == "DAE"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "VAE"),F1_score], na.rm = TRUE)
+
 ```
 
 
@@ -3480,7 +3634,10 @@ plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att
                       & do_evolution == F
                       & comment == "basic"
                       & directory == "eleventh" #"ninth"
-                      #& dataset == "dtf_16"
+                      
+                      & feature_set == "full"
+                      & temporal_cov == TRUE
+                      #& dataset == "dtf_28"
                       ]
 plot_flow <- plot_flow[nb_detour %in% graduation]
 plot_flow$nb_detour = as.factor(plot_flow$nb_detour)
@@ -3577,6 +3734,7 @@ ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = appr
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
 ```
 
 
@@ -3707,7 +3865,7 @@ colvar = "approach"
 group = 9
 my_model = "ISOF"
 p_att = 0.1
-detour = "0" #"0_1_3_5_7_9" # "0" #"5" #"0_1_3_5_7_9"
+detour = "5" #"0_1_3_5_7_9" # "0" #"5" #"0_1_3_5_7_9"
 path = 0
 para_rate ="120Mbps"
 proto= "Udp"
@@ -3730,6 +3888,9 @@ plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att
                      & do_evolution == T #F#T
                      & (comment == "basic" | comment == "basic2")
                       & directory == "eleventh" #"ninth"
+                     & feature_set == "full"
+                      & temporal_cov == TRUE
+                     & cross_seed == FALSE
                       #& dataset == "dtf_16"
                      ]
 #plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
@@ -3823,6 +3984,25 @@ ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = appr
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
+
+mean(plot_flow[(model == "REGLOG"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "SVM")
+               & (nb_detour == 5),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "DAE")
+               & (nb_detour == 9),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "VAE")
+               & (nb_detour == 9),F1_score], na.rm = TRUE)
+
+
+mean(plot_flow[(model == "DAE")
+               & (nb_detour == 9),Recall], na.rm = TRUE)
+
+mean(plot_flow[(model == "VAE")
+               & (nb_detour == 9),Recall], na.rm = TRUE)
 ```
 
 ### X several training with boxplot generic model 1
@@ -3862,6 +4042,9 @@ plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att
                      & do_evolution == F #F#T
                      & (comment == "basic" | comment == "basic2")
                       & directory == "eleventh" #"ninth"
+                     
+                      & feature_set == "full"
+                      & temporal_cov == TRUE
                       #& dataset == "dtf_16"
                      ]
 #plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
@@ -3958,7 +4141,7 @@ ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = appr
   panel.grid.minor = element_line(color = "grey", linewidth = 0.1)
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
-length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
 ```
 
 
@@ -3971,7 +4154,7 @@ x= "nb_detour"
 y = "F1_score"
 #z = "nb_detour"
 colvar = "approach"
-group = 9 #9,27,342
+group = 27 #9,27,342
 my_model = "ISOF"
 p_att = 0.1
 detour = 0
@@ -3999,6 +4182,9 @@ plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att
                      & (comment == "basic")
                       & directory == "eleventh" #"ninth"
                       #& dataset == "dtf_16"
+                     & feature_set == "full"
+                     # & temporal_cov == F#TRUE
+                     & cross_seed == FALSE
                      ]
 #plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
 
@@ -4103,6 +4289,20 @@ ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = appr
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
+
+mean(plot_flow[(model == "THRESHOLD"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "INTERVAL_DELAY"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "SVM")&
+                 (nb_detour == "1_2_4_6_8_10"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "SVM")&
+                 (nb_detour != "1_2_4_6_8_10"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "DAE")&
+                 (nb_detour == "10"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "REGLOG"),F1_score], na.rm = TRUE)
 ```
 
 
@@ -4145,6 +4345,9 @@ plot_flow <- dtf_flow_boxplot[group_id == group & prop_att == p_att
                      & directory == "twelveth" #"tenth"
                      & comment == "basic"
                      #& dataset == "dtf_16"
+                     & feature_set == "full"
+                     # & temporal_cov == F#TRUE
+                     & cross_seed == FALSE
                      ]
 #plot_flow <- plot_flow[!duplicated(plot_flow[, ..to_distinct], fromLast = TRUE)]
 
@@ -4249,6 +4452,26 @@ ggplot(plot_flow, aes(x = nb_detour, y = F1_score, color= approach, shape = appr
     #,legend.key.size = unit(5, "lines")  # or "cm", "pt", etc.
   )
 length(unique(plot_flow$seed))
+length(unique(plot_flow[model == "SVM",seed]))
+
+mean(plot_flow[(model == "THRESHOLD"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "INTERVAL_DELAY"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "SVM")&
+                 (nb_detour == "1_2_4_6_8_10"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "SVM")&
+                 (nb_detour != "1_2_4_6_8_10"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "DAE")&
+                 (nb_detour == "1"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "VAE")&
+                 (nb_detour == "1"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "DAE")&
+                 (nb_detour == "10"),F1_score], na.rm = TRUE)
+mean(plot_flow[(model == "VAE")&
+                 (nb_detour == "10"),F1_score], na.rm = TRUE)
+
+mean(plot_flow[(model == "REGLOG"),F1_score], na.rm = TRUE)
 ```
 
 
