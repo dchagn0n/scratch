@@ -179,7 +179,11 @@ if (opt$name %in% c("path", "parasite")) {
   l_nb_att <- l_nb_att[l_nb_att %in% c(0, 1, 3, 5, 7, 9)]
 }
 
-
+# 
+# ## DEBUG noramlization probleme
+# l_parasite_rate <- c("120Mbps")
+# l_nb_hops <- c(0)
+# l_nb_att <- c(0)
 
 # In multi-detour mode, restrict l_nb_att to those specified in -d
 if (multi_detour) {
@@ -205,7 +209,7 @@ cat("[INFO] nb_att:", paste(l_nb_att, collapse=","), "\n")
 
 # ---- Models & params ----
 set.seed(1997)
-models <- models_list[c(8, 10, 15, 16, 22, 23)]
+models <- models_list[c(8, 10, 15, 16, 22, 23)] #c(10, 15, 16)] #c(8, 10, 15, 16, 22, 23)
 
 main_params <- list(
   prop_att = c(0.1), 

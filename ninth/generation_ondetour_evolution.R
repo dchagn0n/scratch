@@ -182,7 +182,7 @@ if ("testattheend" == opt$name)
 }
 testattheend = T
 
-model_tmp = models_list[c(8,10,15,16,22,23)] #22,23,10,2,11,8,5,4,16,15,17,19,20)] #11,16,  19, 20, 2, 4, 5, 8,  15, 17,23,22, 13,14,10)] #  7)] #
+model_tmp = models_list[c(8,10,15,16,22,23)]#c(10, 15, 16)] #c(8,10,15,16,22,23)] 
 models = model_tmp
 
 
@@ -218,7 +218,7 @@ simple = TRUE
 do_graph = T
 do_print = F
 do_pdf = T
-do_queue = T
+do_queue = F
 do_flow = F
 only_synthese = F #T
 if (ipaddr == "192.168.186.24")
@@ -226,7 +226,7 @@ if (ipaddr == "192.168.186.24")
   do_graph = T #F#
   do_print = F
   do_pdf = T #F#
-  do_queue = T #F#
+  do_queue = F#T #F#
   do_flow = F
   only_synthese = F #T #F#
 }
@@ -264,7 +264,7 @@ if ("TRUE" == toString(opt$graph))
   do_graph = T #F#
   do_print = F
   do_pdf = T #F#
-  do_queue = T #T #F#
+  do_queue = F #T #T #F#
   do_flow = T
   only_synthese = F#T #F#
 }else{
@@ -1001,7 +1001,7 @@ for (proto in l_proto)
                                  trainonpath = current_param$trainonpath) 
             
             
-            size_group = c(9) #342, 27,9) # 342, 
+            size_group = c(9) #27, 342) #9) #342, 27,9) # 342, 
             
             group = size_group[1]
             same_size_dataset = nrow(a0_a1)

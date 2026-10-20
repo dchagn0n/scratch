@@ -713,8 +713,8 @@ do_svm <- function(train_set, test_set, current_param)
   c(is_charged, filename) %<-% is_charge_before(current_param)
   
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)] #, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)] #, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -1422,8 +1422,8 @@ do_oneclasssvm <- function(train_set, test_set, current_param)
   keep = setdiff(names(train_set), remove_col_svm) #-which(names(train_set) %in% remove_col_svm) #, "flow_size" c("attacked")
   
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)] #, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)] #, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -1653,8 +1653,8 @@ do_ae_simple <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)] #, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -1768,8 +1768,8 @@ do_ae_binary <- function(train_set, test_set, current_param)
   # Seperate target column
   keep <- setdiff(names(train_set), remove_col)
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -1947,8 +1947,8 @@ do_vae <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)] #, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -2108,8 +2108,8 @@ do_vae <- function(train_set, test_set, current_param)
       }
       keep <- vae_keep
       # Recalculate X and X_test with aligned keep
-      mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-      maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+      mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+      maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
       X <- train_set[, ..keep][, Map(function(col, minv, maxv) { normalize_me(col, min_val = minv, max_val = maxv) }, .SD, mins, maxs)]
       X <- as.matrix(X)
       X_test <- test_set[, ..keep][, Map(function(col, minv, maxv) { normalize_me(col, min_val = minv, max_val = maxv) }, .SD, mins, maxs)]
@@ -2260,8 +2260,8 @@ do_dae <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -2355,8 +2355,8 @@ do_dae <- function(train_set, test_set, current_param)
       }
       keep <- dae_keep
       # Recalculate X and X_test with aligned keep
-      mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-      maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+      mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+      maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
       X <- train_set[, ..keep][, Map(function(col, minv, maxv) { normalize_me(col, min_val = minv, max_val = maxv) }, .SD, mins, maxs)]
       X <- as.matrix(X)
       X_test <- test_set[, ..keep][, Map(function(col, minv, maxv) { normalize_me(col, min_val = minv, max_val = maxv) }, .SD, mins, maxs)]
@@ -2463,8 +2463,8 @@ do_ae_contractive <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -2601,8 +2601,8 @@ do_ae_sparse <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -2726,8 +2726,8 @@ do_ae_lstm <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
@@ -2887,8 +2887,8 @@ do_ae_conv1d <- function(train_set, test_set, current_param)
   # Preparation of data
   # Seperate target column
   # Calculer les min et max pour chaque colonne
-  mins <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]
-  maxs <- rbindlist(list(train_set, test_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]
+  mins <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, min, na.rm = TRUE)]#, test_set
+  maxs <- rbindlist(list(train_set))[, ..keep][, lapply(.SD, max, na.rm = TRUE)]#, test_set
   
   # X <- train_set[, ..keep][, lapply(.SD, normalize_me)] #train_set[, !names(train_set) %in% remove_col] #c("attacked", "index", "packet_length")
   X_train_tmp <- train_set[, ..keep]
